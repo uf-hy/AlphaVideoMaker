@@ -50,10 +50,21 @@ export interface Resolution {
  * 预设分辨率列表
  */
 export const RESOLUTION_PRESETS: readonly Resolution[] = [
+  // 竖屏 9:16
+  { width: 1080, height: 1920, label: '1080×1920 (9:16)' },
+  { width: 720, height: 1280, label: '720×1280 (9:16)' },
+  // 横屏 16:9
   { width: 1920, height: 1080, label: '1920×1080 (16:9)' },
-  { width: 1080, height: 1080, label: '1080×1080 (1:1)' },
   { width: 1280, height: 720, label: '1280×720 (16:9)' },
+  // 正方形 1:1
+  { width: 1080, height: 1080, label: '1080×1080 (1:1)' },
   { width: 720, height: 720, label: '720×720 (1:1)' },
+  // 竖屏 3:4
+  { width: 1080, height: 1440, label: '1080×1440 (3:4)' },
+  { width: 720, height: 960, label: '720×960 (3:4)' },
+  // 横屏 4:3
+  { width: 1440, height: 1080, label: '1440×1080 (4:3)' },
+  { width: 960, height: 720, label: '960×720 (4:3)' },
 ] as const;
 
 /**
@@ -81,8 +92,8 @@ export interface ExportConfig {
  */
 export const DEFAULT_EXPORT_CONFIG: ExportConfig = {
   codec: 'qtrle',
-  width: 1920,
-  height: 1080,
+  width: 1080,
+  height: 1920,
   fps: 30,
   duration: 5,
   chunkFrames: 30,

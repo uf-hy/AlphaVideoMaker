@@ -79,6 +79,9 @@ export function createApp(
     demoSelect: container.querySelector('#demo-select') as HTMLSelectElement,
     codecSelect: container.querySelector('#codec-select') as HTMLSelectElement,
     resolutionSelect: container.querySelector('#resolution-select') as HTMLSelectElement,
+    toggleResolution: container.querySelector('#toggle-resolution') as HTMLButtonElement,
+    toggleRatio: container.querySelector('#toggle-ratio') as HTMLButtonElement,
+    toggleOrientation: container.querySelector('#toggle-orientation') as HTMLButtonElement,
     contentScaleInput: container.querySelector('#content-scale-input') as HTMLInputElement,
     contentScaleValue: container.querySelector('#content-scale-value') as HTMLSpanElement,
     fpsSelect: container.querySelector('#fps-select') as HTMLSelectElement,
@@ -102,6 +105,25 @@ export function createApp(
   previewCanvas.classList.add('preview-canvas');
   elements.canvasWrapper?.appendChild(previewCanvas);
 
+  // 更新输出边框位置（跟随 canvas 实际显示区域）
+  function updateOutputFrame(): void {
+    if (!elements.outputFrame || !elements.canvasWrapper) return;
+
+    const wrapper = elements.canvasWrapper;
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const canvasRect = previewCanvas.getBoundingClientRect();
+
+    // 计算 canvas 相对于 wrapper 的位置
+    const offsetLeft = canvasRect.left - wrapperRect.left;
+    const offsetTop = canvasRect.top - wrapperRect.top;
+
+    // 更新边框位置和尺寸
+    elements.outputFrame.style.left = `${offsetLeft}px`;
+    elements.outputFrame.style.top = `${offsetTop}px`;
+    elements.outputFrame.style.width = `${canvasRect.width}px`;
+    elements.outputFrame.style.height = `${canvasRect.height}px`;
+  }
+
   // 更新预览（所见即所得）
   function updatePreview(): void {
     const { width, height } = state.config;
@@ -109,6 +131,11 @@ export function createApp(
     // 设置预览 Canvas 尺寸为输出尺寸
     previewCanvas.width = width;
     previewCanvas.height = height;
+
+    // 更新预览区域的宽高比
+    if (elements.canvasWrapper) {
+      elements.canvasWrapper.style.setProperty('--preview-aspect-ratio', `${width}/${height}`);
+    }
 
     // 更新预览信息
     if (elements.previewInfo) {
@@ -119,6 +146,11 @@ export function createApp(
     if (elements.contentScaleValue) {
       elements.contentScaleValue.textContent = `${state.contentScale.toFixed(1)}x`;
     }
+
+    // 延迟更新边框位置，等待 DOM 重新布局
+    requestAnimationFrame(() => {
+      updateOutputFrame();
+    });
   }
 
   // 更新风险警告
@@ -322,6 +354,99 @@ export function createApp(
     }
     updatePreview();
     updateRiskWarning();
+    updateToggleButtons();
+  });
+
+  // 快捷按钮状态
+  let currentResolution: '1080' | '720' = '1080';
+  let currentRatio: 'square' | 'normal' = 'normal';
+  let currentOrientation: 'portrait' | 'landscape' = 'portrait';
+
+  // 根据快捷按钮状态计算分辨率
+  function calculateResolution(): { width: number; height: number } {
+    const base = currentResolution === '1080' ? 1080 : 720;
+
+    if (currentRatio === 'square') {
+      return { width: base, height: base };
+    }
+
+    // 正常比例 (9:16 或 16:9)
+    const longSide = currentResolution === '1080' ? 1920 : 1280;
+    const shortSide = base;
+
+    if (currentOrientation === 'portrait') {
+      return { width: shortSide, height: longSide };
+    } else {
+      return { width: longSide, height: shortSide };
+    }
+  }
+
+  // 更新分辨率并同步 UI
+  function applyResolutionFromShortcuts(): void {
+    const { width, height } = calculateResolution();
+    state.config.width = width;
+    state.config.height = height;
+
+    // 同步下拉框
+    const newValue = `${width}x${height}`;
+    const matchingOption = Array.from(elements.resolutionSelect?.options ?? [])
+      .find(opt => opt.value === newValue);
+
+    if (matchingOption) {
+      elements.resolutionSelect!.value = newValue;
+    }
+
+    updatePreview();
+    updateRiskWarning();
+  }
+
+  // 更新切换按钮的显示文字和状态
+  function updateToggleButtons(): void {
+    // 根据当前分辨率反推状态
+    const { width, height } = state.config;
+    const isSquare = width === height;
+    const isPortrait = height > width;
+
+    // 判断清晰度（用短边判断）
+    const minDim = Math.min(width, height);
+    currentResolution = minDim >= 1080 ? '1080' : '720';
+    currentRatio = isSquare ? 'square' : 'normal';
+    currentOrientation = isPortrait ? 'portrait' : 'landscape';
+
+    // 更新按钮文字
+    if (elements.toggleResolution) {
+      elements.toggleResolution.textContent = currentResolution === '1080' ? '1080p' : '720p';
+    }
+    if (elements.toggleRatio) {
+      elements.toggleRatio.textContent = currentRatio === 'square' ? '方形' : '正常';
+    }
+    if (elements.toggleOrientation) {
+      elements.toggleOrientation.textContent = currentOrientation === 'portrait' ? '竖屏' : '横屏';
+      // 方形时禁用方向按钮
+      elements.toggleOrientation.classList.toggle('disabled', currentRatio === 'square');
+    }
+  }
+
+  // 事件监听 - 清晰度切换
+  elements.toggleResolution?.addEventListener('click', () => {
+    currentResolution = currentResolution === '1080' ? '720' : '1080';
+    applyResolutionFromShortcuts();
+    updateToggleButtons();
+  });
+
+  // 事件监听 - 比例切换
+  elements.toggleRatio?.addEventListener('click', () => {
+    currentRatio = currentRatio === 'normal' ? 'square' : 'normal';
+    applyResolutionFromShortcuts();
+    updateToggleButtons();
+  });
+
+  // 事件监听 - 方向切换
+  elements.toggleOrientation?.addEventListener('click', () => {
+    if (currentRatio === 'square') return; // 方形时不切换
+    currentOrientation = currentOrientation === 'portrait' ? 'landscape' : 'portrait';
+    applyResolutionFromShortcuts();
+    updateToggleButtons();
   });
 
   // 事件监听 - 内容缩放滑块
@@ -350,6 +475,7 @@ export function createApp(
   updatePreview();
   updateRiskWarning();
   updateButtons();
+  updateToggleButtons();
 
   // 启动预览动画循环
   let animationId: number | null = null;
@@ -362,6 +488,12 @@ export function createApp(
     animationId = requestAnimationFrame(previewLoop);
   }
 
+  // 监听窗口 resize 事件，更新边框位置
+  const handleResize = (): void => {
+    updateOutputFrame();
+  };
+  window.addEventListener('resize', handleResize);
+
   animationId = requestAnimationFrame(previewLoop);
 
   return {
@@ -369,6 +501,7 @@ export function createApp(
       if (animationId !== null) {
         cancelAnimationFrame(animationId);
       }
+      window.removeEventListener('resize', handleResize);
       exportController?.cancel();
       container.innerHTML = '';
     },
@@ -409,9 +542,6 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
       <div class="preview-section">
         <div class="preview-header">
           <h2 class="preview-title">预览 (所见即所得)</h2>
-          <span class="preview-info">
-            ${canUseMultiThread ? '✅ 多线程模式' : '⚠️ 单线程模式'}
-          </span>
         </div>
         <div class="preview-canvas-wrapper">
           <div class="output-frame"></div>
@@ -446,9 +576,16 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
 
           <div class="form-group">
             <label class="form-label">输出分辨率</label>
-            <select id="resolution-select" class="form-select">
-              ${resolutionOptions}
-            </select>
+            <div class="resolution-row">
+              <select id="resolution-select" class="form-select">
+                ${resolutionOptions}
+              </select>
+            </div>
+            <div class="resolution-shortcuts">
+              <button type="button" class="btn-toggle" id="toggle-resolution">1080p</button>
+              <button type="button" class="btn-toggle" id="toggle-ratio">正常</button>
+              <button type="button" class="btn-toggle" id="toggle-orientation">竖屏</button>
+            </div>
           </div>
 
           <div class="form-group">

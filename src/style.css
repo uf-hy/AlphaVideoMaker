@@ -125,7 +125,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  aspect-ratio: 16/9;
+  /* 动态宽高比，通过 JS 设置 */
+  aspect-ratio: var(--preview-aspect-ratio, 9/16);
+  max-height: 70vh;
   /* 棋盘格背景显示透明 */
   background-image:
     linear-gradient(45deg, #222 25%, transparent 25%),
@@ -227,6 +229,79 @@ body {
   margin-top: var(--spacing-xs);
 }
 
+/* 分辨率行（带切换按钮） */
+.resolution-row {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+.resolution-row .form-select {
+  flex: 1;
+}
+
+.btn-icon {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-icon:hover {
+  border-color: var(--color-primary);
+  background-color: var(--color-surface-hover);
+}
+
+.btn-icon:active {
+  transform: scale(0.95);
+}
+
+/* 分辨率快捷按钮组 */
+.resolution-shortcuts {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-top: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.btn-toggle {
+  padding: 6px 14px;
+  font-size: 12px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  min-width: 60px;
+  text-align: center;
+}
+
+.btn-toggle:hover {
+  border-color: var(--color-primary);
+  background-color: var(--color-surface-hover);
+}
+
+.btn-toggle:active {
+  transform: scale(0.95);
+}
+
+.btn-toggle.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* 滑块样式 */
 .form-range {
   width: 100%;
@@ -281,13 +356,11 @@ body {
 /* 输出边框指示器 */
 .output-frame {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
   border: 2px dashed rgba(99, 102, 241, 0.5);
   pointer-events: none;
   z-index: 10;
+  box-sizing: border-box;
+  transition: all 0.15s ease-out;
 }
 
 /* 风险提示 */

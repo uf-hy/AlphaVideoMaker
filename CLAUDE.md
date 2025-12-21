@@ -6,7 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Alpha Video Maker 是一个纯前端的 Canvas 动画透明视频导出组件，将 HTML Canvas 动画离线逐帧渲染并导出为带 Alpha 通道的 MOV 视频。仅支持 Chromium 内核浏览器（Chrome 89+、Edge 89+）。
 
-## 常用命令
+## 开发调试
+
+### Vite 热更新
+
+项目使用 Vite 作为开发服务器，**默认支持热更新（HMR）**：
+- 修改代码后浏览器会自动刷新，无需手动执行 `npm run dev`
+- 如果服务已通过 `./start.sh` 启动，直接修改代码即可实时预览
+- CSS 修改会即时生效，无需刷新页面
+
+### 常用命令
 
 ```bash
 # 开发模式（启动 Vite 开发服务器，自动配置 COOP/COEP headers）
@@ -26,9 +35,9 @@ npm run lint
 npm run lint:fix
 ```
 
-## 服务管理脚本
+### 服务管理脚本
 
-项目提供了便捷的服务管理脚本（端口：32103）：
+项目根目录提供了便捷的服务管理脚本（端口：32103）：
 
 ```bash
 # 启动服务（后台运行，日志输出到 server.log）
@@ -45,6 +54,7 @@ npm run lint:fix
 - 服务以后台进程方式运行，PID 保存在 `server.pid`
 - 日志文件：`server.log`
 - 访问地址：`http://localhost:32103`
+- 启动后 Vite 热更新自动生效，修改代码即可实时预览
 
 ## 架构设计
 
@@ -71,6 +81,14 @@ CanvasRenderer.renderAt(t) → PNG 帧 → ChunkedEncoder → FFmpeg.wasm → MO
 - `environment.ts`: 环境检测（crossOriginIsolated、SharedArrayBuffer、Chromium 内核）
 - `blob-utils.ts`: Canvas 到 Blob/Uint8Array 转换
 - `memory.ts`: 内存管理工具
+
+**ui/** - 用户界面
+- `app.ts`: 主应用模块，管理导出流程的 UI 和状态，包含分辨率快捷切换按钮
+
+**demo/** - 示例动画
+- `index.ts`: 示例动画注册
+- `particle-animation.ts`: 粒子动画示例
+- `gradient-animation.ts`: 渐变动画示例
 
 ### 关键接口
 
@@ -113,3 +131,35 @@ interface CanvasRenderer {
 |------|--------|----------|------|
 | qtrle | qtrle | argb | 默认，无损压缩，兼容性好 |
 | prores_4444 | prores_ks | yuva444p10le | 专业后期，高质量 |
+
+## UI 功能
+
+### 分辨率预设
+
+默认分辨率为 **1080×1920（竖屏 9:16）**，支持以下预设：
+
+| 类型 | 分辨率 |
+|------|--------|
+| 竖屏 9:16 | 1080×1920, 720×1280 |
+| 横屏 16:9 | 1920×1080, 1280×720 |
+| 正方形 1:1 | 1080×1080, 720×720 |
+| 竖屏 3:4 | 1080×1440, 720×960 |
+| 横屏 4:3 | 1440×1080, 960×720 |
+
+### 快捷切换按钮
+
+UI 提供三个快捷切换按钮，点击即可切换状态：
+
+| 按钮 | 功能 | 切换值 |
+|------|------|--------|
+| 清晰度 | 切换分辨率档位 | 1080p ↔ 720p |
+| 比例 | 切换画面比例 | 正常(9:16/16:9) ↔ 方形(1:1) |
+| 方向 | 切换横竖屏 | 竖屏 ↔ 横屏 |
+
+**注意**：选择"方形"时，方向按钮会禁用（方形无横竖之分）
+
+### 预览区域
+
+- 预览区域会根据当前分辨率自动调整宽高比
+- 蓝色虚线框精确标识输出区域边界
+- 支持动画内容缩放（0.5x ~ 3x）
