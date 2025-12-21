@@ -559,3 +559,369 @@ body {
     width: 100%;
   }
 }
+
+/* ========================================
+   HTML 编辑器应用样式
+   ======================================== */
+
+.html-editor-app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* 左侧编辑器面板 */
+.editor-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border);
+  min-width: 400px;
+}
+
+.editor-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.editor-panel .panel-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.template-buttons {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.template-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.template-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+}
+
+.editor-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.editor-container .cm-editor {
+  height: 100%;
+}
+
+/* 右侧预览面板 */
+.preview-panel {
+  width: 420px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-surface);
+}
+
+.preview-panel .preview-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-md);
+  border-bottom: 1px solid var(--color-border);
+  min-height: 0;
+}
+
+.preview-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+}
+
+.preview-panel .panel-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.preview-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-bg);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  /* 棋盘格背景 */
+  background-image:
+    linear-gradient(45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1a1a 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  background-color: #252525;
+}
+
+.preview-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-container iframe {
+  max-width: 100%;
+  max-height: 100%;
+  border: none;
+}
+
+/* 控制区 */
+.control-section {
+  padding: var(--spacing-md);
+  overflow-y: auto;
+}
+
+.control-group {
+  margin-bottom: var(--spacing-md);
+}
+
+.control-group:last-child {
+  margin-bottom: 0;
+}
+
+.control-group label {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.control-group .hint {
+  display: block;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+.control-row {
+  display: flex;
+  gap: var(--spacing-md);
+}
+
+.control-row .control-group {
+  flex: 1;
+}
+
+.html-editor-app .progress-section {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.html-editor-app .progress-bar-wrapper {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.html-editor-app .progress-percent {
+  font-size: 12px;
+  min-width: 40px;
+  text-align: right;
+}
+
+.warning-hint {
+  font-size: 11px;
+  color: var(--color-warning);
+  margin-top: var(--spacing-sm);
+  text-align: center;
+}
+
+/* 响应式 - HTML 编辑器 */
+@media (max-width: 1000px) {
+  .html-editor-app {
+    flex-direction: column;
+  }
+
+  .editor-panel {
+    min-width: 100%;
+    height: 50vh;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .preview-panel {
+    width: 100%;
+    height: 50vh;
+  }
+}
+
+/* ========================================
+   模态弹窗样式
+   ======================================== */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: var(--spacing-lg);
+}
+
+.modal-container {
+  background-color: var(--color-surface);
+  border-radius: var(--radius-lg);
+  max-width: 95vw;
+  max-height: 95vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.html-editor-modal {
+  width: 1400px;
+  height: 85vh;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.modal-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.modal-close-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all 0.15s;
+}
+
+.modal-close-btn:hover {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.modal-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+/* HTML 编辑器布局 */
+.html-editor-layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.html-editor-left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+.html-editor-right {
+  width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-toolbar {
+  display: flex;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.modal-editor-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.modal-editor-container .cm-editor {
+  height: 100%;
+}
+
+.modal-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.modal-preview-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-md);
+  /* 棋盘格背景 */
+  background-image:
+    linear-gradient(45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1a1a 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1a1a 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  background-color: #252525;
+  overflow: hidden;
+}
+
+.modal-preview-container iframe {
+  max-width: 100%;
+  max-height: 100%;
+  border: none;
+  background: transparent;
+}

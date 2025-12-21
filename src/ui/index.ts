@@ -3,3 +3,4 @@
  */
 
 export { createApp } from './app';
+export { createHtmlEditorApp } from './html-editor-app';

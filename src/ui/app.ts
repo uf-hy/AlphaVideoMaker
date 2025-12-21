@@ -20,6 +20,16 @@ import { createExportController, ExportController } from '@/core/export-controll
 import { detectEnvironment, checkMemoryRisk, downloadBlob } from '@/utils';
 import { getCodecDisplayName } from '@/encoder';
 import { DEMO_ANIMATIONS } from '@/demo';
+import {
+  createHtmlEditor,
+  createIframePreview,
+  createHtmlExportRenderer,
+  DEFAULT_HTML_TEMPLATE,
+  REALTIME_HTML_TEMPLATE,
+  type HtmlEditor,
+  type IframePreview,
+  type RecordMode,
+} from '@/editor';
 
 /**
  * 应用状态
@@ -59,6 +69,11 @@ export function createApp(
     currentDemoId: DEMO_ANIMATIONS[0]?.id ?? '',
   };
 
+  // 动画速度控制
+  let animationSpeed = 1.0;
+  let animationStartTime = 0;
+  let animationPausedTime = 0; // 用于非循环动画的暂停时间点
+
   let currentRenderer = renderer;
   let exportController: ExportController | null = null;
 
@@ -84,6 +99,8 @@ export function createApp(
     toggleOrientation: container.querySelector('#toggle-orientation') as HTMLButtonElement,
     contentScaleInput: container.querySelector('#content-scale-input') as HTMLInputElement,
     contentScaleValue: container.querySelector('#content-scale-value') as HTMLSpanElement,
+    animationSpeedInput: container.querySelector('#animation-speed-input') as HTMLInputElement,
+    animationSpeedValue: container.querySelector('#animation-speed-value') as HTMLSpanElement,
     fpsSelect: container.querySelector('#fps-select') as HTMLSelectElement,
     durationSelect: container.querySelector('#duration-select') as HTMLSelectElement,
     riskWarning: container.querySelector('.risk-warning'),
@@ -190,30 +207,38 @@ export function createApp(
     }
   }
 
-  // 渲染预览帧（所见即所得）
-  function renderPreviewFrame(t: number): void {
-    if (!previewCtx) return;
+  // 渲染预览帧（所见即所得）- 支持异步渲染器
+  let isRenderingFrame = false;
 
-    // 先在源 Canvas 上渲染动画
-    currentRenderer.renderAt(t);
+  async function renderPreviewFrame(t: number): Promise<void> {
+    if (!previewCtx || isRenderingFrame) return;
 
-    // 清除预览 Canvas
-    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    isRenderingFrame = true;
 
-    // 计算缩放后的尺寸
-    const scaledWidth = currentRenderer.width * state.contentScale;
-    const scaledHeight = currentRenderer.height * state.contentScale;
+    try {
+      // 先在源 Canvas 上渲染动画（支持异步）
+      await currentRenderer.renderAt(t);
 
-    // 居中绘制
-    const offsetX = (previewCanvas.width - scaledWidth) / 2;
-    const offsetY = (previewCanvas.height - scaledHeight) / 2;
+      // 清除预览 Canvas
+      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
 
-    // 将源 Canvas 内容缩放绘制到预览 Canvas
-    previewCtx.drawImage(
-      canvas,
-      0, 0, currentRenderer.width, currentRenderer.height,
-      offsetX, offsetY, scaledWidth, scaledHeight
-    );
+      // 计算缩放后的尺寸
+      const scaledWidth = currentRenderer.width * state.contentScale;
+      const scaledHeight = currentRenderer.height * state.contentScale;
+
+      // 居中绘制
+      const offsetX = (previewCanvas.width - scaledWidth) / 2;
+      const offsetY = (previewCanvas.height - scaledHeight) / 2;
+
+      // 将源 Canvas 内容缩放绘制到预览 Canvas
+      previewCtx.drawImage(
+        canvas,
+        0, 0, currentRenderer.width, currentRenderer.height,
+        offsetX, offsetY, scaledWidth, scaledHeight
+      );
+    } finally {
+      isRenderingFrame = false;
+    }
   }
 
   // 更新进度显示
@@ -455,6 +480,17 @@ export function createApp(
     updatePreview();
   });
 
+  // 事件监听 - 动画速度滑块
+  elements.animationSpeedInput?.addEventListener('input', (e) => {
+    animationSpeed = Number((e.target as HTMLInputElement).value);
+    if (elements.animationSpeedValue) {
+      elements.animationSpeedValue.textContent = `${animationSpeed.toFixed(1)}x`;
+    }
+    // 重置动画起始时间，避免跳帧
+    animationStartTime = performance.now();
+    animationPausedTime = 0;
+  });
+
   // 事件监听 - 帧率
   elements.fpsSelect?.addEventListener('change', (e) => {
     state.config.fps = Number((e.target as HTMLSelectElement).value) as FpsOption;
@@ -471,6 +507,182 @@ export function createApp(
   elements.cancelBtn?.addEventListener('click', cancelExport);
   elements.downloadBtn?.addEventListener('click', download);
 
+  // ========== HTML 编辑器模态弹窗 ==========
+  let modalEditor: HtmlEditor | null = null;
+  let modalPreview: IframePreview | null = null;
+  let modalRecordMode: RecordMode = 'deterministic';
+  let modalTransparentMode: 'auto' | 'none' | 'custom' = 'auto';
+  let modalHtmlCode = DEFAULT_HTML_TEMPLATE;
+
+  const modalElements = {
+    modal: container.querySelector('#html-editor-modal') as HTMLElement,
+    editorContainer: container.querySelector('#modal-editor-container') as HTMLElement,
+    previewContainer: container.querySelector('#modal-preview-container') as HTMLElement,
+    recordModeSelect: container.querySelector('#modal-record-mode') as HTMLSelectElement,
+    transparentModeSelect: container.querySelector('#modal-transparent-mode') as HTMLSelectElement,
+    openBtn: container.querySelector('#open-html-editor-btn') as HTMLButtonElement,
+    closeBtn: container.querySelector('#close-html-editor-btn') as HTMLButtonElement,
+    applyBtn: container.querySelector('#apply-html-btn') as HTMLButtonElement,
+    cancelBtn: container.querySelector('#cancel-html-btn') as HTMLButtonElement,
+    templateBtns: container.querySelectorAll('.modal-body .template-btn') as NodeListOf<HTMLButtonElement>,
+  };
+
+  function processModalHtml(html: string): string {
+    if (modalTransparentMode === 'none') return html;
+    const bgStyle = 'background: transparent !important; background-color: transparent !important;';
+    const injectStyle = `<style id="__alpha_inject__">html,body{${bgStyle}}</style>`;
+    if (html.includes('</head>')) {
+      return html.replace('</head>', `${injectStyle}</head>`);
+    }
+    return injectStyle + html;
+  }
+
+  function openHtmlEditorModal(): void {
+    modalElements.modal.style.display = 'flex';
+
+    // 初始化编辑器（如果还没有）
+    if (!modalEditor && modalElements.editorContainer) {
+      modalEditor = createHtmlEditor({
+        container: modalElements.editorContainer,
+        initialCode: modalHtmlCode,
+        onChange: (code) => {
+          modalHtmlCode = code;
+          modalPreview?.updateContent(processModalHtml(code));
+        },
+        debounceDelay: 300,
+      });
+    }
+
+    // 初始化预览
+    if (!modalPreview && modalElements.previewContainer) {
+      modalPreview = createIframePreview({
+        container: modalElements.previewContainer,
+        width: state.config.width,
+        height: state.config.height,
+      });
+      modalPreview.updateContent(processModalHtml(modalHtmlCode));
+    }
+
+    // 启动预览动画
+    startModalPreviewLoop();
+  }
+
+  function closeHtmlEditorModal(): void {
+    modalElements.modal.style.display = 'none';
+    stopModalPreviewLoop();
+  }
+
+  let modalPreviewAnimationId: number | null = null;
+
+  function startModalPreviewLoop(): void {
+    if (modalRecordMode !== 'deterministic') return;
+    const startTime = performance.now();
+    function loop(): void {
+      const elapsed = (performance.now() - startTime) / 1000;
+      const t = (elapsed % state.config.duration) / state.config.duration;
+      modalPreview?.setProgress(t);
+      modalPreviewAnimationId = requestAnimationFrame(loop);
+    }
+    modalPreviewAnimationId = requestAnimationFrame(loop);
+  }
+
+  function stopModalPreviewLoop(): void {
+    if (modalPreviewAnimationId !== null) {
+      cancelAnimationFrame(modalPreviewAnimationId);
+      modalPreviewAnimationId = null;
+    }
+  }
+
+  // 应用 HTML 动画
+  function applyHtmlAnimation(): void {
+    if (!modalEditor) return;
+
+    // 创建隐藏容器用于渲染
+    let hiddenContainer = document.querySelector('#hidden-render-container') as HTMLElement;
+    if (!hiddenContainer) {
+      hiddenContainer = document.createElement('div');
+      hiddenContainer.id = 'hidden-render-container';
+      hiddenContainer.style.cssText = 'position: absolute; left: -9999px; top: -9999px;';
+      document.body.appendChild(hiddenContainer);
+    }
+
+    // 创建 HTML 渲染器
+    const htmlRenderer = createHtmlExportRenderer({
+      html: processModalHtml(modalHtmlCode),
+      width: state.config.width,
+      height: state.config.height,
+      duration: state.config.duration,
+      mode: modalRecordMode,
+      hiddenContainer,
+      canvas,
+      ctx,
+    });
+
+    // 替换当前渲染器
+    currentRenderer = htmlRenderer;
+
+    // 更新 demo 选择框显示
+    if (elements.demoSelect) {
+      // 添加自定义选项（如果不存在）
+      let customOption = elements.demoSelect.querySelector('option[value="custom-html"]') as HTMLOptionElement;
+      if (!customOption) {
+        customOption = document.createElement('option');
+        customOption.value = 'custom-html';
+        customOption.textContent = '🎨 自定义 HTML';
+        elements.demoSelect.appendChild(customOption);
+      }
+      elements.demoSelect.value = 'custom-html';
+    }
+
+    closeHtmlEditorModal();
+    updatePreview();
+  }
+
+  // 事件监听
+  modalElements.openBtn?.addEventListener('click', openHtmlEditorModal);
+  modalElements.closeBtn?.addEventListener('click', closeHtmlEditorModal);
+  modalElements.cancelBtn?.addEventListener('click', closeHtmlEditorModal);
+  modalElements.applyBtn?.addEventListener('click', applyHtmlAnimation);
+
+  modalElements.recordModeSelect?.addEventListener('change', (e) => {
+    modalRecordMode = (e.target as HTMLSelectElement).value as RecordMode;
+    stopModalPreviewLoop();
+    if (modalRecordMode === 'deterministic') {
+      startModalPreviewLoop();
+    } else {
+      modalPreview?.reset();
+    }
+  });
+
+  modalElements.transparentModeSelect?.addEventListener('change', (e) => {
+    modalTransparentMode = (e.target as HTMLSelectElement).value as 'auto' | 'none' | 'custom';
+    if (modalEditor) {
+      modalPreview?.updateContent(processModalHtml(modalHtmlCode));
+    }
+  });
+
+  modalElements.templateBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const templateType = btn.dataset.template;
+      if (templateType === 'deterministic' && modalEditor) {
+        modalHtmlCode = DEFAULT_HTML_TEMPLATE;
+        modalEditor.setCode(modalHtmlCode);
+        modalPreview?.updateContent(processModalHtml(modalHtmlCode));
+      } else if (templateType === 'realtime' && modalEditor) {
+        modalHtmlCode = REALTIME_HTML_TEMPLATE;
+        modalEditor.setCode(modalHtmlCode);
+        modalPreview?.updateContent(processModalHtml(modalHtmlCode));
+      }
+    });
+  });
+
+  // 点击遮罩关闭
+  modalElements.modal?.addEventListener('click', (e) => {
+    if (e.target === modalElements.modal) {
+      closeHtmlEditorModal();
+    }
+  });
+
   // 初始化
   updatePreview();
   updateRiskWarning();
@@ -479,10 +691,14 @@ export function createApp(
 
   // 启动预览动画循环
   let animationId: number | null = null;
+  animationStartTime = performance.now();
 
   function previewLoop(timestamp: number): void {
     if (!state.isExporting) {
-      const t = (timestamp / 1000) % currentRenderer.duration;
+      // 计算经过的时间（考虑速度）
+      const elapsed = ((timestamp - animationStartTime) / 1000) * animationSpeed + animationPausedTime;
+      // 循环播放
+      const t = elapsed % currentRenderer.duration;
       renderPreviewFrame(t);
     }
     animationId = requestAnimationFrame(previewLoop);
@@ -501,6 +717,9 @@ export function createApp(
       if (animationId !== null) {
         cancelAnimationFrame(animationId);
       }
+      stopModalPreviewLoop();
+      modalEditor?.destroy();
+      modalPreview?.destroy();
       window.removeEventListener('resize', handleResize);
       exportController?.cancel();
       container.innerHTML = '';
@@ -561,6 +780,12 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
               ${demoOptions}
             </select>
           </div>
+
+          <div class="form-group">
+            <button id="open-html-editor-btn" class="btn btn-secondary btn-full">
+              ✏️ 自定义 HTML 动画
+            </button>
+          </div>
         </div>
 
         <div class="panel-card">
@@ -608,6 +833,28 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
               <span>3x</span>
             </div>
             <small class="form-hint">调整动画在画面中的大小，预览即为最终效果</small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              预览播放速度 <span id="animation-speed-value" class="scale-value">1.0x</span>
+            </label>
+            <input
+              type="range"
+              id="animation-speed-input"
+              class="form-range"
+              min="0.1"
+              max="3"
+              step="0.1"
+              value="1"
+            />
+            <div class="range-labels">
+              <span>0.1x</span>
+              <span>1x</span>
+              <span>2x</span>
+              <span>3x</span>
+            </div>
+            <small class="form-hint">仅影响预览速度，不影响导出</small>
           </div>
 
           <div class="form-group">
@@ -663,6 +910,46 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
       <div class="export-overlay__message">正在处理...</div>
       <div class="export-overlay__warning">⚠️ 请勿关闭页面</div>
       <button id="overlay-cancel-btn" class="btn btn-danger">取消导出</button>
+    </div>
+
+    <!-- HTML 编辑器模态弹窗 -->
+    <div id="html-editor-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-container html-editor-modal">
+        <div class="modal-header">
+          <h2>✏️ 自定义 HTML 动画</h2>
+          <button id="close-html-editor-btn" class="modal-close-btn">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="html-editor-layout">
+            <div class="html-editor-left">
+              <div class="editor-toolbar">
+                <button class="template-btn" data-template="deterministic">确定性模板</button>
+                <button class="template-btn" data-template="realtime">实时模板</button>
+                <select id="modal-record-mode" class="form-select" style="width: auto;">
+                  <option value="deterministic">确定性模式</option>
+                  <option value="realtime">实时模式</option>
+                </select>
+              </div>
+              <div id="modal-editor-container" class="modal-editor-container"></div>
+            </div>
+            <div class="html-editor-right">
+              <div class="modal-preview-header">
+                <span>预览</span>
+                <select id="modal-transparent-mode" class="form-select" style="width: auto;">
+                  <option value="auto">自动透明</option>
+                  <option value="none">不处理</option>
+                  <option value="custom">指定颜色</option>
+                </select>
+              </div>
+              <div id="modal-preview-container" class="modal-preview-container"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="apply-html-btn" class="btn btn-primary">✓ 应用此动画</button>
+          <button id="cancel-html-btn" class="btn btn-secondary">取消</button>
+        </div>
+      </div>
     </div>
   `;
 }

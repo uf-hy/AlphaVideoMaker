@@ -1,0 +1,294 @@
+/**
+ * HTML 动画渲染器
+ * 实现 CanvasRenderer 接口，支持确定性模式和实时模式
+ */
+
+import html2canvas from 'html2canvas';
+import type { CanvasRenderer } from '@/core/types';
+import { createIframePreview, type IframePreview } from './iframe-preview';
+
+/**
+ * 录制模式
+ */
+export type RecordMode = 'deterministic' | 'realtime';
+
+export interface HtmlAnimationRendererOptions {
+  /** HTML 代码 */
+  html: string;
+  /** 输出宽度 */
+  width: number;
+  /** 输出高度 */
+  height: number;
+  /** 动画时长 (秒) */
+  duration: number;
+  /** 录制模式 */
+  mode: RecordMode;
+  /** 用于渲染的隐藏容器 */
+  hiddenContainer: HTMLElement;
+}
+
+/**
+ * 创建 HTML 动画渲染器
+ */
+export function createHtmlAnimationRenderer(
+  options: HtmlAnimationRendererOptions
+): CanvasRenderer & {
+  /** 获取 iframe 预览 */
+  getPreview(): IframePreview;
+  /** 更新 HTML */
+  updateHtml(html: string): void;
+  /** 更新配置 */
+  updateConfig(config: Partial<HtmlAnimationRendererOptions>): void;
+} {
+  let { html, width, height, duration, mode, hiddenContainer } = options;
+
+  // 创建隐藏的 iframe 用于渲染
+  const preview = createIframePreview({
+    container: hiddenContainer,
+    width,
+    height,
+  });
+
+  // 初始化内容
+  preview.updateContent(html);
+
+  // 等待 iframe 加载完成
+  let isReady = false;
+  const iframe = preview.getIframe();
+
+  iframe.addEventListener('load', () => {
+    isReady = true;
+  });
+
+  /**
+   * 等待 iframe 准备就绪
+   */
+  async function waitForReady(): Promise<void> {
+    if (isReady) return;
+
+    return new Promise((resolve) => {
+      const checkReady = (): void => {
+        if (isReady) {
+          resolve();
+        } else {
+          requestAnimationFrame(checkReady);
+        }
+      };
+      checkReady();
+    });
+  }
+
+  /**
+   * 确定性模式渲染
+   * 通过设置 CSS 变量 --t 来控制动画进度
+   */
+  async function renderDeterministic(
+    t: number,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D
+  ): Promise<void> {
+    await waitForReady();
+
+    // 计算进度 (0-1)
+    const progress = t / duration;
+
+    // 设置 CSS 变量
+    preview.setProgress(progress);
+
+    // 等待一帧让样式生效
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    // 使用 html2canvas 截图
+    const contentWindow = preview.getContentWindow();
+    if (!contentWindow?.document?.body) {
+      throw new Error('iframe 内容未加载');
+    }
+
+    const capturedCanvas = await html2canvas(contentWindow.document.body, {
+      backgroundColor: null, // 透明背景
+      width,
+      height,
+      scale: 1,
+      logging: false,
+      useCORS: true,
+      allowTaint: true,
+    });
+
+    // 绘制到目标 canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(capturedCanvas, 0, 0);
+  }
+
+  /**
+   * 实时模式渲染
+   * 直接截取当前 iframe 状态
+   */
+  async function renderRealtime(
+    _t: number,
+    canvas: HTMLCanvasElement,
+    ctx: CanvasRenderingContext2D
+  ): Promise<void> {
+    await waitForReady();
+
+    const contentWindow = preview.getContentWindow();
+    if (!contentWindow?.document?.body) {
+      throw new Error('iframe 内容未加载');
+    }
+
+    const capturedCanvas = await html2canvas(contentWindow.document.body, {
+      backgroundColor: null,
+      width,
+      height,
+      scale: 1,
+      logging: false,
+      useCORS: true,
+      allowTaint: true,
+    });
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(capturedCanvas, 0, 0);
+  }
+
+  // 用于存储渲染目标
+  let targetCanvas: HTMLCanvasElement | null = null;
+  let targetCtx: CanvasRenderingContext2D | null = null;
+
+  return {
+    get width() {
+      return width;
+    },
+    get height() {
+      return height;
+    },
+    get duration() {
+      return duration;
+    },
+
+    async renderAt(t: number): Promise<void> {
+      if (!targetCanvas || !targetCtx) {
+        throw new Error('渲染目标未设置，请先调用 setRenderTarget');
+      }
+
+      if (mode === 'deterministic') {
+        await renderDeterministic(t, targetCanvas, targetCtx);
+      } else {
+        await renderRealtime(t, targetCanvas, targetCtx);
+      }
+    },
+
+    dispose(): void {
+      preview.destroy();
+    },
+
+    getPreview(): IframePreview {
+      return preview;
+    },
+
+    updateHtml(newHtml: string): void {
+      html = newHtml;
+      preview.updateContent(html);
+      isReady = false;
+    },
+
+    updateConfig(config: Partial<HtmlAnimationRendererOptions>): void {
+      if (config.width !== undefined) width = config.width;
+      if (config.height !== undefined) height = config.height;
+      if (config.duration !== undefined) duration = config.duration;
+      if (config.mode !== undefined) mode = config.mode;
+
+      if (config.width !== undefined || config.height !== undefined) {
+        preview.resize(width, height);
+      }
+
+      if (config.html !== undefined) {
+        this.updateHtml(config.html);
+      }
+    },
+  };
+}
+
+/**
+ * 创建用于导出的 HTML 渲染器
+ * 这个版本接收外部 canvas 和 ctx
+ */
+export function createHtmlExportRenderer(
+  options: HtmlAnimationRendererOptions & {
+    canvas: HTMLCanvasElement;
+    ctx: CanvasRenderingContext2D;
+  }
+): CanvasRenderer {
+  const { canvas, ctx, html, width, height, duration, mode, hiddenContainer } = options;
+
+  // 创建隐藏的 iframe
+  const preview = createIframePreview({
+    container: hiddenContainer,
+    width,
+    height,
+  });
+
+  let isReady = false;
+  const iframe = preview.getIframe();
+
+  // 先添加事件监听器，再设置内容
+  iframe.addEventListener('load', () => {
+    isReady = true;
+  });
+
+  // 然后再设置内容
+  preview.updateContent(html);
+
+  async function waitForReady(): Promise<void> {
+    if (isReady) return;
+    return new Promise((resolve) => {
+      const check = (): void => {
+        if (isReady) resolve();
+        else requestAnimationFrame(check);
+      };
+      check();
+    });
+  }
+
+  return {
+    get width() {
+      return width;
+    },
+    get height() {
+      return height;
+    },
+    get duration() {
+      return duration;
+    },
+
+    async renderAt(t: number): Promise<void> {
+      await waitForReady();
+
+      if (mode === 'deterministic') {
+        const progress = t / duration;
+        preview.setProgress(progress);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+
+      const contentWindow = preview.getContentWindow();
+      if (!contentWindow?.document?.body) {
+        throw new Error('iframe 内容未加载');
+      }
+
+      const capturedCanvas = await html2canvas(contentWindow.document.body, {
+        backgroundColor: null,
+        width,
+        height,
+        scale: 1,
+        logging: false,
+        useCORS: true,
+        allowTaint: true,
+      });
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(capturedCanvas, 0, 0);
+    },
+
+    dispose(): void {
+      preview.destroy();
+    },
+  };
+}

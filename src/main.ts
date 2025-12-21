@@ -7,8 +7,23 @@
  */
 
 import './style.css';
-import { createApp } from '@/ui';
+import { createApp, createHtmlEditorApp } from '@/ui';
 import { createDefaultAnimation, DEMO_ANIMATIONS } from '@/demo';
+
+/**
+ * 应用模式
+ */
+type AppMode = 'canvas' | 'html';
+
+/**
+ * 获取应用模式（从 URL 参数）
+ */
+function getAppMode(): AppMode {
+  const params = new URLSearchParams(window.location.search);
+  const mode = params.get('mode');
+  // 默认使用 Canvas 动画模式
+  return mode === 'html' ? 'html' : 'canvas';
+}
 
 /**
  * 应用初始化
@@ -21,7 +36,21 @@ function init(): void {
     return;
   }
 
-  // 创建 Canvas
+  const mode = getAppMode();
+
+  if (mode === 'html') {
+    // HTML 编辑器模式
+    const app = createHtmlEditorApp(appContainer);
+
+    if (import.meta.env.DEV) {
+      (window as unknown as { app: typeof app }).app = app;
+      console.log('Alpha Video Maker 已启动 (HTML 编辑器模式)');
+      console.log('切换到 Canvas 模式: ?mode=canvas');
+    }
+    return;
+  }
+
+  // Canvas 动画模式
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
@@ -36,19 +65,17 @@ function init(): void {
     return;
   }
 
-  // 创建默认动画
   const renderer = createDefaultAnimation(ctx);
   canvas.width = renderer.width;
   canvas.height = renderer.height;
 
-  // 创建应用（传递 ctx 用于切换动画）
   const app = createApp(appContainer, canvas, renderer, ctx);
 
-  // 开发环境下暴露到 window
   if (import.meta.env.DEV) {
     (window as unknown as { app: typeof app; DEMO_ANIMATIONS: typeof DEMO_ANIMATIONS }).app = app;
     (window as unknown as { DEMO_ANIMATIONS: typeof DEMO_ANIMATIONS }).DEMO_ANIMATIONS = DEMO_ANIMATIONS;
-    console.log('Alpha Video Maker 已启动 (开发模式)');
+    console.log('Alpha Video Maker 已启动 (Canvas 动画模式)');
+    console.log('切换到 HTML 编辑器模式: ?mode=html');
     console.log('可用的示例动画:', DEMO_ANIMATIONS.map((d) => d.name).join(', '));
   }
 }
