@@ -130,6 +130,16 @@ export function createApp(
 
     currentRenderer = customHtmlRenderer;
     state.currentDemoId = 'custom-html';
+
+    const vp = ensureVisibleHtmlPreview();
+    vp.resize(state.config.width, state.config.height);
+    vp.updateContent(
+      injectTransparentBackground(customHtmlState.html, {
+        mode: customHtmlState.transparentMode,
+      })
+    );
+
+    updatePreviewModeVisibility();
   }
 
   // 检测环境
@@ -173,9 +183,37 @@ export function createApp(
     outputFrame: container.querySelector('.output-frame') as HTMLElement,
   };
 
+  // 自定义 HTML：在预览区直接显示 iframe（更接近真实渲染，避免 html2canvas 实时截图卡顿）
+  const htmlPreviewWrapper = document.createElement('div');
+  htmlPreviewWrapper.className = 'preview-container';
+  htmlPreviewWrapper.style.width = '100%';
+  htmlPreviewWrapper.style.height = '100%';
+  htmlPreviewWrapper.style.display = 'none';
+
+  let visibleHtmlPreview: IframePreview | null = null;
+
+  function ensureVisibleHtmlPreview(): IframePreview {
+    if (!visibleHtmlPreview) {
+      visibleHtmlPreview = createIframePreview({
+        container: htmlPreviewWrapper,
+        width: state.config.width,
+        height: state.config.height,
+      });
+    }
+    return visibleHtmlPreview;
+  }
+
+  function updatePreviewModeVisibility(): void {
+    const isCustomHtml = state.currentDemoId === 'custom-html';
+    previewCanvas.style.display = isCustomHtml ? 'none' : '';
+    htmlPreviewWrapper.style.display = isCustomHtml ? 'flex' : 'none';
+    requestAnimationFrame(() => updateOutputFrame());
+  }
+
   // 将预览 Canvas 添加到预览区
   previewCanvas.classList.add('preview-canvas');
   elements.canvasWrapper?.appendChild(previewCanvas);
+  elements.canvasWrapper?.appendChild(htmlPreviewWrapper);
 
   // 更新输出边框位置（跟随 canvas 实际显示区域）
   function updateOutputFrame(): void {
@@ -183,7 +221,11 @@ export function createApp(
 
     const wrapper = elements.canvasWrapper;
     const wrapperRect = wrapper.getBoundingClientRect();
-    const canvasRect = previewCanvas.getBoundingClientRect();
+    const rectTarget =
+      state.currentDemoId === 'custom-html' && visibleHtmlPreview
+        ? visibleHtmlPreview.getIframe()
+        : previewCanvas;
+    const canvasRect = rectTarget.getBoundingClientRect();
 
     // 计算 canvas 相对于 wrapper 的位置
     const offsetLeft = canvasRect.left - wrapperRect.left;
@@ -256,6 +298,7 @@ export function createApp(
         canvas.width = currentRenderer.width;
         canvas.height = currentRenderer.height;
         updatePreview();
+        updatePreviewModeVisibility();
       }
       return;
     }
@@ -270,6 +313,7 @@ export function createApp(
       canvas.height = currentRenderer.height;
 
       updatePreview();
+      updatePreviewModeVisibility();
     }
   }
 
@@ -754,6 +798,7 @@ export function createApp(
   updateRiskWarning();
   updateButtons();
   updateToggleButtons();
+  updatePreviewModeVisibility();
 
   // 启动预览动画循环
   let animationId: number | null = null;
@@ -765,7 +810,16 @@ export function createApp(
       const elapsed = ((timestamp - animationStartTime) / 1000) * animationSpeed + animationPausedTime;
       // 循环播放
       const t = elapsed % currentRenderer.duration;
-      renderPreviewFrame(t);
+      if (
+        state.currentDemoId === 'custom-html' &&
+        customHtmlState?.recordMode === 'deterministic' &&
+        visibleHtmlPreview
+      ) {
+        const progress = (t % state.config.duration) / state.config.duration;
+        visibleHtmlPreview.setProgress(progress);
+      } else {
+        renderPreviewFrame(t);
+      }
     }
     animationId = requestAnimationFrame(previewLoop);
   }
@@ -786,6 +840,7 @@ export function createApp(
       stopModalPreviewLoop();
       modalEditor?.destroy();
       modalPreview?.destroy();
+      visibleHtmlPreview?.destroy();
       window.removeEventListener('resize', handleResize);
       exportController?.cancel();
       container.innerHTML = '';
@@ -813,11 +868,11 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
   ).join('');
 
   const resolutionOptions = RESOLUTION_PRESETS.map((r) =>
-    `<option value="${r.width}x${r.height}">${r.label}</option>`
+    `<option value="${r.width}x${r.height}" ${r.width === state.config.width && r.height === state.config.height ? 'selected' : ''}>${r.label}</option>`
   ).join('');
 
   const durationOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    .map((d) => `<option value="${d}" ${d === 5 ? 'selected' : ''}>${d} 秒</option>`)
+    .map((d) => `<option value="${d}" ${d === state.config.duration ? 'selected' : ''}>${d} 秒</option>`)
     .join('');
 
   return `
