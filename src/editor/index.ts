@@ -12,7 +12,9 @@ export {
 } from './html-renderer';
 export {
   injectTransparentBackground,
+  injectContentScale,
   type TransparentMode,
   type InjectTransparentBackgroundOptions,
+  type InjectContentScaleOptions,
 } from './html-utils';
 export { DEFAULT_HTML_TEMPLATE, REALTIME_HTML_TEMPLATE } from './templates';

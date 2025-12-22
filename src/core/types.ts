@@ -85,6 +85,8 @@ export interface ExportConfig {
   chunkFrames: number;
   /** 动画内容缩放比例 (1 = 原始大小) */
   contentScale?: number;
+  /** 播放速度 (0.1 ~ 5)。同时影响预览和导出 */
+  playbackRate?: number;
 }
 
 /**

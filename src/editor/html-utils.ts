@@ -8,6 +8,10 @@ export interface InjectTransparentBackgroundOptions {
   customBgColor?: string;
 }
 
+export interface InjectContentScaleOptions {
+  contentScale: number;
+}
+
 /**
  * 注入透明背景处理样式（用于 iframe/srcdoc 场景）
  *
@@ -36,3 +40,20 @@ export function injectTransparentBackground(
   return injectStyle + html;
 }
 
+/**
+ * 注入内容缩放（用于“自定义 HTML”预览/导出的一致性）
+ *
+ * 注意：这是对整个 body 做 transform 缩放，能匹配“内容缩放”语义，但也会影响 layout。
+ */
+export function injectContentScale(html: string, options: InjectContentScaleOptions): string {
+  const contentScale = Number(options.contentScale);
+  if (!Number.isFinite(contentScale) || contentScale === 1) return html;
+
+  const injectStyle = `<style id="__alpha_content_scale__">body{transform:scale(${contentScale});transform-origin:50% 50%;}</style>`;
+
+  if (html.includes('</head>')) {
+    return html.replace('</head>', `${injectStyle}</head>`);
+  }
+
+  return injectStyle + html;
+}

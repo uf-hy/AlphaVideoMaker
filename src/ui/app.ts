@@ -30,6 +30,7 @@ import {
   type IframePreview,
   type RecordMode,
   injectTransparentBackground,
+  injectContentScale,
   type TransparentMode,
 } from '@/editor';
 
@@ -44,6 +45,7 @@ interface AppState {
   warnings: string[];
   riskWarning: string;
   contentScale: number; // 动画内容缩放比例
+  playbackRate: number; // 播放速度（影响导出）
   currentDemoId: string;
 }
 
@@ -68,11 +70,10 @@ export function createApp(
     warnings: [],
     riskWarning: '',
     contentScale: 1, // 默认 1x
+    playbackRate: 1, // 默认 1x
     currentDemoId: DEMO_ANIMATIONS[0]?.id ?? '',
   };
 
-  // 动画速度控制
-  let animationSpeed = 1.0;
   let animationStartTime = 0;
   let animationPausedTime = 0; // 用于非循环动画的暂停时间点
 
@@ -115,10 +116,13 @@ export function createApp(
     canvas.width = state.config.width;
     canvas.height = state.config.height;
 
+    const exportHtml = injectTransparentBackground(customHtmlState.html, {
+      mode: customHtmlState.transparentMode,
+    });
+    const previewHtml = injectContentScale(exportHtml, { contentScale: state.contentScale });
+
     customHtmlRenderer = createHtmlExportRenderer({
-      html: injectTransparentBackground(customHtmlState.html, {
-        mode: customHtmlState.transparentMode,
-      }),
+      html: exportHtml,
       width: state.config.width,
       height: state.config.height,
       duration: state.config.duration,
@@ -133,11 +137,7 @@ export function createApp(
 
     const vp = ensureVisibleHtmlPreview();
     vp.resize(state.config.width, state.config.height);
-    vp.updateContent(
-      injectTransparentBackground(customHtmlState.html, {
-        mode: customHtmlState.transparentMode,
-      })
-    );
+    vp.updateContent(previewHtml);
 
     updatePreviewModeVisibility();
   }
@@ -443,6 +443,7 @@ export function createApp(
     const exportConfig: ExportConfig = {
       ...state.config,
       contentScale: state.contentScale,
+      playbackRate: state.playbackRate,
     };
 
     exportController = createExportController(
@@ -602,13 +603,16 @@ export function createApp(
   elements.contentScaleInput?.addEventListener('input', (e) => {
     state.contentScale = Number((e.target as HTMLInputElement).value);
     updatePreview();
+    if (state.currentDemoId === 'custom-html') {
+      rebuildCustomHtmlRenderer();
+    }
   });
 
   // 事件监听 - 动画速度滑块
   elements.animationSpeedInput?.addEventListener('input', (e) => {
-    animationSpeed = Number((e.target as HTMLInputElement).value);
+    state.playbackRate = Number((e.target as HTMLInputElement).value);
     if (elements.animationSpeedValue) {
-      elements.animationSpeedValue.textContent = `${animationSpeed.toFixed(1)}x`;
+      elements.animationSpeedValue.textContent = `${state.playbackRate.toFixed(1)}x`;
     }
     // 重置动画起始时间，避免跳帧
     animationStartTime = performance.now();
@@ -807,7 +811,7 @@ export function createApp(
   function previewLoop(timestamp: number): void {
     if (!state.isExporting) {
       // 计算经过的时间（考虑速度）
-      const elapsed = ((timestamp - animationStartTime) / 1000) * animationSpeed + animationPausedTime;
+      const elapsed = ((timestamp - animationStartTime) / 1000) * state.playbackRate + animationPausedTime;
       // 循环播放
       const t = elapsed % currentRenderer.duration;
       if (
@@ -958,14 +962,14 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
 
           <div class="form-group">
             <label class="form-label">
-              预览播放速度 <span id="animation-speed-value" class="scale-value">1.0x</span>
+              播放速度 <span id="animation-speed-value" class="scale-value">1.0x</span>
             </label>
             <input
               type="range"
               id="animation-speed-input"
               class="form-range"
               min="0.1"
-              max="3"
+              max="5"
               step="0.1"
               value="1"
             />
@@ -973,9 +977,9 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
               <span>0.1x</span>
               <span>1x</span>
               <span>2x</span>
-              <span>3x</span>
+              <span>5x</span>
             </div>
-            <small class="form-hint">仅影响预览速度，不影响导出</small>
+            <small class="form-hint">影响预览与导出（更慢或更快）</small>
           </div>
 
           <div class="form-group">

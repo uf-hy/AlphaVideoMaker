@@ -45,6 +45,9 @@ export class FrameRenderer {
   private totalFrames: number;
   private cancelled = false;
 
+  // 播放速度（影响 renderAt(t) 的 t）
+  private playbackRate: number;
+
   // 目标输出尺寸
   private targetWidth: number;
   private targetHeight: number;
@@ -63,7 +66,8 @@ export class FrameRenderer {
     duration: number,
     targetWidth: number,
     targetHeight: number,
-    contentScale: number = 1
+    contentScale: number = 1,
+    playbackRate: number = 1
   ) {
     this.canvas = canvas;
     this.renderer = renderer;
@@ -73,6 +77,7 @@ export class FrameRenderer {
     this.targetWidth = targetWidth;
     this.targetHeight = targetHeight;
     this.contentScale = contentScale;
+    this.playbackRate = playbackRate;
 
     // 保持主 Canvas 为渲染器的原始尺寸
     this.canvas.width = renderer.width;
@@ -106,7 +111,11 @@ export class FrameRenderer {
     }
 
     // 计算时间点（确定性）
-    const time = frameIndex / this.fps;
+    // - exportTime: 按导出 fps 递增
+    // - renderTime: 受 playbackRate 影响，并按 renderer.duration 循环（与预览一致）
+    const exportTime = frameIndex / this.fps;
+    const rawTime = exportTime * this.playbackRate;
+    const time = this.renderer.duration > 0 ? rawTime % this.renderer.duration : rawTime;
 
     // 在主 Canvas 上渲染（原始尺寸）
     await this.renderer.renderAt(time);
@@ -251,7 +260,8 @@ export function createFrameRenderer(
   duration: number,
   targetWidth: number,
   targetHeight: number,
-  contentScale: number = 1
+  contentScale: number = 1,
+  playbackRate: number = 1
 ): FrameRenderer {
-  return new FrameRenderer(canvas, renderer, fps, duration, targetWidth, targetHeight, contentScale);
+  return new FrameRenderer(canvas, renderer, fps, duration, targetWidth, targetHeight, contentScale, playbackRate);
 }

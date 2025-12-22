@@ -80,7 +80,8 @@ export class ExportController {
         this.config.duration,
         this.config.width,
         this.config.height,
-        this.config.contentScale ?? 1
+        this.config.contentScale ?? 1,
+        this.config.playbackRate ?? 1
       );
 
       const totalFrames = this.frameRenderer.getTotalFrames();
