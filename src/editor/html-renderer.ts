@@ -128,6 +128,12 @@ export function createHtmlAnimationRenderer(
 
     const capturedCanvas = await html2canvas(contentWindow.document.body, {
       backgroundColor: null, // 透明背景
+      x: 0,
+      y: 0,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: width,
+      windowHeight: height,
       width,
       height,
       scale: 1,
@@ -160,6 +166,12 @@ export function createHtmlAnimationRenderer(
 
     const capturedCanvas = await html2canvas(contentWindow.document.body, {
       backgroundColor: null,
+      x: 0,
+      y: 0,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: width,
+      windowHeight: height,
       width,
       height,
       scale: 1,
@@ -299,6 +311,12 @@ export function createHtmlExportRenderer(
 
       const capturedCanvas = await html2canvas(contentWindow.document.body, {
         backgroundColor: null,
+        x: 0,
+        y: 0,
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: width,
+        windowHeight: height,
         width,
         height,
         scale: 1,
