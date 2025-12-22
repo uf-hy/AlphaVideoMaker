@@ -46,6 +46,7 @@ interface AppState {
   riskWarning: string;
   contentScale: number; // 动画内容缩放比例
   playbackRate: number; // 播放速度（影响导出）
+  loopPreview: boolean; // 预览是否循环
   currentDemoId: string;
 }
 
@@ -71,6 +72,7 @@ export function createApp(
     riskWarning: '',
     contentScale: 1, // 默认 1x
     playbackRate: 1, // 默认 1x
+    loopPreview: true,
     currentDemoId: DEMO_ANIMATIONS[0]?.id ?? '',
   };
 
@@ -166,6 +168,8 @@ export function createApp(
     contentScaleValue: container.querySelector('#content-scale-value') as HTMLSpanElement,
     animationSpeedInput: container.querySelector('#animation-speed-input') as HTMLInputElement,
     animationSpeedValue: container.querySelector('#animation-speed-value') as HTMLSpanElement,
+    loopPreviewBtn: container.querySelector('#toggle-loop-preview') as HTMLButtonElement,
+    resetPreviewBtn: container.querySelector('#reset-preview-btn') as HTMLButtonElement,
     fpsSelect: container.querySelector('#fps-select') as HTMLSelectElement,
     durationSelect: container.querySelector('#duration-select') as HTMLSelectElement,
     riskWarning: container.querySelector('.risk-warning'),
@@ -220,22 +224,37 @@ export function createApp(
     if (!elements.outputFrame || !elements.canvasWrapper) return;
 
     const wrapper = elements.canvasWrapper;
-    const wrapperRect = wrapper.getBoundingClientRect();
-    const rectTarget =
-      state.currentDemoId === 'custom-html' && visibleHtmlPreview
-        ? visibleHtmlPreview.getIframe()
-        : previewCanvas;
-    const canvasRect = rectTarget.getBoundingClientRect();
 
-    // 计算 canvas 相对于 wrapper 的位置
-    const offsetLeft = canvasRect.left - wrapperRect.left;
-    const offsetTop = canvasRect.top - wrapperRect.top;
+    // 使用 wrapper 的内容区域计算“contain”后的可见矩形
+    // 这样不依赖 canvas/iframe 的 DOM 布局，避免在 display:none / iframe 缩放下框线失效
+    const wrapperWidth = wrapper.clientWidth;
+    const wrapperHeight = wrapper.clientHeight;
 
-    // 更新边框位置和尺寸
+    if (wrapperWidth <= 0 || wrapperHeight <= 0) return;
+
+    const aspect = state.config.width / state.config.height;
+    const wrapperAspect = wrapperWidth / wrapperHeight;
+
+    let rectWidth: number;
+    let rectHeight: number;
+
+    if (wrapperAspect > aspect) {
+      // 以高度为基准
+      rectHeight = wrapperHeight;
+      rectWidth = rectHeight * aspect;
+    } else {
+      // 以宽度为基准
+      rectWidth = wrapperWidth;
+      rectHeight = rectWidth / aspect;
+    }
+
+    const offsetLeft = (wrapperWidth - rectWidth) / 2;
+    const offsetTop = (wrapperHeight - rectHeight) / 2;
+
     elements.outputFrame.style.left = `${offsetLeft}px`;
     elements.outputFrame.style.top = `${offsetTop}px`;
-    elements.outputFrame.style.width = `${canvasRect.width}px`;
-    elements.outputFrame.style.height = `${canvasRect.height}px`;
+    elements.outputFrame.style.width = `${rectWidth}px`;
+    elements.outputFrame.style.height = `${rectHeight}px`;
   }
 
   // 更新预览（所见即所得）
@@ -285,6 +304,26 @@ export function createApp(
         (elements.riskWarning as HTMLElement).style.display = 'flex';
       } else {
         (elements.riskWarning as HTMLElement).style.display = 'none';
+      }
+    }
+  }
+
+  function updatePreviewControls(): void {
+    if (elements.loopPreviewBtn) {
+      elements.loopPreviewBtn.textContent = state.loopPreview ? '循环: 开' : '循环: 关';
+    }
+  }
+
+  function resetPreview(): void {
+    animationStartTime = performance.now();
+    animationPausedTime = 0;
+
+    if (state.currentDemoId === 'custom-html') {
+      // realtime 模式只能通过 reload iframe 来重置
+      if (customHtmlState?.recordMode === 'realtime') {
+        visibleHtmlPreview?.reset();
+      } else {
+        visibleHtmlPreview?.setProgress(0);
       }
     }
   }
@@ -615,8 +654,18 @@ export function createApp(
       elements.animationSpeedValue.textContent = `${state.playbackRate.toFixed(1)}x`;
     }
     // 重置动画起始时间，避免跳帧
-    animationStartTime = performance.now();
-    animationPausedTime = 0;
+    resetPreview();
+  });
+
+  // 事件监听 - 循环开关
+  elements.loopPreviewBtn?.addEventListener('click', () => {
+    state.loopPreview = !state.loopPreview;
+    updatePreviewControls();
+  });
+
+  // 事件监听 - 重置预览
+  elements.resetPreviewBtn?.addEventListener('click', () => {
+    resetPreview();
   });
 
   // 事件监听 - 帧率
@@ -803,6 +852,7 @@ export function createApp(
   updateButtons();
   updateToggleButtons();
   updatePreviewModeVisibility();
+  updatePreviewControls();
 
   // 启动预览动画循环
   let animationId: number | null = null;
@@ -812,14 +862,14 @@ export function createApp(
     if (!state.isExporting) {
       // 计算经过的时间（考虑速度）
       const elapsed = ((timestamp - animationStartTime) / 1000) * state.playbackRate + animationPausedTime;
-      // 循环播放
-      const t = elapsed % currentRenderer.duration;
+      const duration = currentRenderer.duration;
+      const t = state.loopPreview ? (elapsed % duration) : Math.min(elapsed, duration);
       if (
         state.currentDemoId === 'custom-html' &&
         customHtmlState?.recordMode === 'deterministic' &&
         visibleHtmlPreview
       ) {
-        const progress = (t % state.config.duration) / state.config.duration;
+        const progress = duration > 0 ? Math.min(1, Math.max(0, t / duration)) : 0;
         visibleHtmlPreview.setProgress(progress);
       } else {
         renderPreviewFrame(t);
@@ -980,6 +1030,15 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
               <span>5x</span>
             </div>
             <small class="form-hint">影响预览与导出（更慢或更快）</small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">预览控制</label>
+            <div class="btn-group">
+              <button type="button" class="btn-toggle" id="toggle-loop-preview">循环: 开</button>
+              <button type="button" class="btn btn-secondary" id="reset-preview-btn">重置</button>
+            </div>
+            <small class="form-hint">一次性动画可关闭循环，播放到末尾会停住</small>
           </div>
 
           <div class="form-group">
