@@ -7,6 +7,35 @@ import html2canvas from 'html2canvas';
 import type { CanvasRenderer } from '@/core/types';
 import { createIframePreview, type IframePreview } from './iframe-preview';
 
+const DEFAULT_IFRAME_READY_TIMEOUT_MS = 8000;
+const DEFAULT_HTML2CANVAS_IMAGE_TIMEOUT_MS = 8000;
+
+async function waitForIframeDomReady(
+  iframe: HTMLIFrameElement,
+  timeoutMs: number = DEFAULT_IFRAME_READY_TIMEOUT_MS
+): Promise<void> {
+  const start = performance.now();
+
+  while (true) {
+    const doc = iframe.contentDocument;
+    const hasBody = Boolean(doc?.body);
+    const readyState = doc?.readyState;
+
+    // 不强依赖 load 事件：某些情况下（子资源挂起 / 被拦截）load 可能永远不触发。
+    if (hasBody && (readyState === 'interactive' || readyState === 'complete')) {
+      return;
+    }
+
+    // 超时后：只要有 body 就继续（尽量避免“永久卡死”）
+    if (performance.now() - start > timeoutMs) {
+      if (hasBody) return;
+      throw new Error('iframe 初始化超时');
+    }
+
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+}
+
 /**
  * 录制模式
  */
@@ -37,6 +66,8 @@ export function createHtmlAnimationRenderer(
   getPreview(): IframePreview;
   /** 更新 HTML */
   updateHtml(html: string): void;
+  /** 设置渲染目标（必须先调用） */
+  setRenderTarget(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): void;
   /** 更新配置 */
   updateConfig(config: Partial<HtmlAnimationRendererOptions>): void;
 } {
@@ -49,9 +80,6 @@ export function createHtmlAnimationRenderer(
     height,
   });
 
-  // 初始化内容
-  preview.updateContent(html);
-
   // 等待 iframe 加载完成
   let isReady = false;
   const iframe = preview.getIframe();
@@ -60,22 +88,16 @@ export function createHtmlAnimationRenderer(
     isReady = true;
   });
 
+  // 初始化内容（在 load 监听器之后，避免首次 load 丢失）
+  preview.updateContent(html);
+
   /**
    * 等待 iframe 准备就绪
    */
   async function waitForReady(): Promise<void> {
     if (isReady) return;
-
-    return new Promise((resolve) => {
-      const checkReady = (): void => {
-        if (isReady) {
-          resolve();
-        } else {
-          requestAnimationFrame(checkReady);
-        }
-      };
-      checkReady();
-    });
+    await waitForIframeDomReady(iframe);
+    isReady = true;
   }
 
   /**
@@ -90,7 +112,7 @@ export function createHtmlAnimationRenderer(
     await waitForReady();
 
     // 计算进度 (0-1)
-    const progress = t / duration;
+    const progress = Math.min(1, Math.max(0, t / duration));
 
     // 设置 CSS 变量
     preview.setProgress(progress);
@@ -110,6 +132,7 @@ export function createHtmlAnimationRenderer(
       height,
       scale: 1,
       logging: false,
+      imageTimeout: DEFAULT_HTML2CANVAS_IMAGE_TIMEOUT_MS,
       useCORS: true,
       allowTaint: true,
     });
@@ -141,6 +164,7 @@ export function createHtmlAnimationRenderer(
       height,
       scale: 1,
       logging: false,
+      imageTimeout: DEFAULT_HTML2CANVAS_IMAGE_TIMEOUT_MS,
       useCORS: true,
       allowTaint: true,
     });
@@ -166,7 +190,7 @@ export function createHtmlAnimationRenderer(
 
     async renderAt(t: number): Promise<void> {
       if (!targetCanvas || !targetCtx) {
-        throw new Error('渲染目标未设置，请先调用 setRenderTarget');
+        throw new Error('渲染目标未设置，请先调用 setRenderTarget(canvas, ctx)');
       }
 
       if (mode === 'deterministic') {
@@ -188,6 +212,11 @@ export function createHtmlAnimationRenderer(
       html = newHtml;
       preview.updateContent(html);
       isReady = false;
+    },
+
+    setRenderTarget(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D): void {
+      targetCanvas = canvas;
+      targetCtx = ctx;
     },
 
     updateConfig(config: Partial<HtmlAnimationRendererOptions>): void {
@@ -239,13 +268,8 @@ export function createHtmlExportRenderer(
 
   async function waitForReady(): Promise<void> {
     if (isReady) return;
-    return new Promise((resolve) => {
-      const check = (): void => {
-        if (isReady) resolve();
-        else requestAnimationFrame(check);
-      };
-      check();
-    });
+    await waitForIframeDomReady(iframe);
+    isReady = true;
   }
 
   return {
@@ -263,7 +287,7 @@ export function createHtmlExportRenderer(
       await waitForReady();
 
       if (mode === 'deterministic') {
-        const progress = t / duration;
+        const progress = Math.min(1, Math.max(0, t / duration));
         preview.setProgress(progress);
         await new Promise((resolve) => requestAnimationFrame(resolve));
       }
@@ -279,6 +303,7 @@ export function createHtmlExportRenderer(
         height,
         scale: 1,
         logging: false,
+        imageTimeout: DEFAULT_HTML2CANVAS_IMAGE_TIMEOUT_MS,
         useCORS: true,
         allowTaint: true,
       });

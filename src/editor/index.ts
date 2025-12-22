@@ -10,4 +10,9 @@ export {
   type RecordMode,
   type HtmlAnimationRendererOptions,
 } from './html-renderer';
+export {
+  injectTransparentBackground,
+  type TransparentMode,
+  type InjectTransparentBackgroundOptions,
+} from './html-utils';
 export { DEFAULT_HTML_TEMPLATE, REALTIME_HTML_TEMPLATE } from './templates';
