@@ -29,6 +29,8 @@ import {
   type HtmlEditor,
   type IframePreview,
   type RecordMode,
+  injectTransparentBackground,
+  type TransparentMode,
 } from '@/editor';
 
 /**
@@ -76,6 +78,59 @@ export function createApp(
 
   let currentRenderer = renderer;
   let exportController: ExportController | null = null;
+
+  // 自定义 HTML 动画状态（解耦“编辑/应用/配置变更”）
+  let customHtmlState:
+    | {
+        html: string;
+        recordMode: RecordMode;
+        transparentMode: TransparentMode;
+      }
+    | null = null;
+  let customHtmlRenderer: CanvasRenderer | null = null;
+  let customHtmlHiddenContainer: HTMLElement | null = null;
+
+  function getOrCreateCustomHtmlHiddenContainer(): HTMLElement {
+    if (customHtmlHiddenContainer) return customHtmlHiddenContainer;
+
+    let hiddenContainer = document.querySelector('#hidden-render-container') as HTMLElement;
+    if (!hiddenContainer) {
+      hiddenContainer = document.createElement('div');
+      hiddenContainer.id = 'hidden-render-container';
+      hiddenContainer.style.cssText = 'position: absolute; left: -9999px; top: -9999px;';
+      document.body.appendChild(hiddenContainer);
+    }
+
+    customHtmlHiddenContainer = hiddenContainer;
+    return hiddenContainer;
+  }
+
+  function rebuildCustomHtmlRenderer(): void {
+    if (!customHtmlState) return;
+
+    // 清理旧 renderer，避免 iframe 堆积
+    customHtmlRenderer?.dispose?.();
+
+    // HTML 渲染器的输出尺寸必须与 config 一致，否则会出现裁剪（文字“消失”）
+    canvas.width = state.config.width;
+    canvas.height = state.config.height;
+
+    customHtmlRenderer = createHtmlExportRenderer({
+      html: injectTransparentBackground(customHtmlState.html, {
+        mode: customHtmlState.transparentMode,
+      }),
+      width: state.config.width,
+      height: state.config.height,
+      duration: state.config.duration,
+      mode: customHtmlState.recordMode,
+      hiddenContainer: getOrCreateCustomHtmlHiddenContainer(),
+      canvas,
+      ctx,
+    });
+
+    currentRenderer = customHtmlRenderer;
+    state.currentDemoId = 'custom-html';
+  }
 
   // 检测环境
   const env = detectEnvironment();
@@ -194,6 +249,17 @@ export function createApp(
 
   // 切换 Demo 动画
   function switchDemo(demoId: string): void {
+    if (demoId === 'custom-html') {
+      if (customHtmlRenderer) {
+        currentRenderer = customHtmlRenderer;
+        state.currentDemoId = 'custom-html';
+        canvas.width = currentRenderer.width;
+        canvas.height = currentRenderer.height;
+        updatePreview();
+      }
+      return;
+    }
+
     const demo = DEMO_ANIMATIONS.find(d => d.id === demoId);
     if (demo) {
       state.currentDemoId = demoId;
@@ -217,7 +283,13 @@ export function createApp(
 
     try {
       // 先在源 Canvas 上渲染动画（支持异步）
-      await currentRenderer.renderAt(t);
+      try {
+        await currentRenderer.renderAt(t);
+      } catch (error) {
+        // 避免未处理 Promise 拒绝导致循环异常；并为“资源 load 卡住”类问题留出恢复机会
+        console.error('预览渲染失败:', error);
+        return;
+      }
 
       // 清除预览 Canvas
       previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
@@ -380,6 +452,10 @@ export function createApp(
     updatePreview();
     updateRiskWarning();
     updateToggleButtons();
+
+    if (state.currentDemoId === 'custom-html') {
+      rebuildCustomHtmlRenderer();
+    }
   });
 
   // 快捷按钮状态
@@ -423,6 +499,10 @@ export function createApp(
 
     updatePreview();
     updateRiskWarning();
+
+    if (state.currentDemoId === 'custom-html') {
+      rebuildCustomHtmlRenderer();
+    }
   }
 
   // 更新切换按钮的显示文字和状态
@@ -501,6 +581,10 @@ export function createApp(
   elements.durationSelect?.addEventListener('change', (e) => {
     state.config.duration = Number((e.target as HTMLSelectElement).value);
     updateRiskWarning();
+
+    if (state.currentDemoId === 'custom-html') {
+      rebuildCustomHtmlRenderer();
+    }
   });
 
   elements.startBtn?.addEventListener('click', startExport);
@@ -511,7 +595,7 @@ export function createApp(
   let modalEditor: HtmlEditor | null = null;
   let modalPreview: IframePreview | null = null;
   let modalRecordMode: RecordMode = 'deterministic';
-  let modalTransparentMode: 'auto' | 'none' | 'custom' = 'auto';
+  let modalTransparentMode: TransparentMode = 'auto';
   let modalHtmlCode = DEFAULT_HTML_TEMPLATE;
 
   const modalElements = {
@@ -528,13 +612,7 @@ export function createApp(
   };
 
   function processModalHtml(html: string): string {
-    if (modalTransparentMode === 'none') return html;
-    const bgStyle = 'background: transparent !important; background-color: transparent !important;';
-    const injectStyle = `<style id="__alpha_inject__">html,body{${bgStyle}}</style>`;
-    if (html.includes('</head>')) {
-      return html.replace('</head>', `${injectStyle}</head>`);
-    }
-    return injectStyle + html;
+    return injectTransparentBackground(html, { mode: modalTransparentMode });
   }
 
   function openHtmlEditorModal(): void {
@@ -554,12 +632,16 @@ export function createApp(
     }
 
     // 初始化预览
-    if (!modalPreview && modalElements.previewContainer) {
-      modalPreview = createIframePreview({
-        container: modalElements.previewContainer,
-        width: state.config.width,
-        height: state.config.height,
-      });
+    if (modalElements.previewContainer) {
+      if (!modalPreview) {
+        modalPreview = createIframePreview({
+          container: modalElements.previewContainer,
+          width: state.config.width,
+          height: state.config.height,
+        });
+      } else {
+        modalPreview.resize(state.config.width, state.config.height);
+      }
       modalPreview.updateContent(processModalHtml(modalHtmlCode));
     }
 
@@ -597,29 +679,13 @@ export function createApp(
   function applyHtmlAnimation(): void {
     if (!modalEditor) return;
 
-    // 创建隐藏容器用于渲染
-    let hiddenContainer = document.querySelector('#hidden-render-container') as HTMLElement;
-    if (!hiddenContainer) {
-      hiddenContainer = document.createElement('div');
-      hiddenContainer.id = 'hidden-render-container';
-      hiddenContainer.style.cssText = 'position: absolute; left: -9999px; top: -9999px;';
-      document.body.appendChild(hiddenContainer);
-    }
+    customHtmlState = {
+      html: modalHtmlCode,
+      recordMode: modalRecordMode,
+      transparentMode: modalTransparentMode,
+    };
 
-    // 创建 HTML 渲染器
-    const htmlRenderer = createHtmlExportRenderer({
-      html: processModalHtml(modalHtmlCode),
-      width: state.config.width,
-      height: state.config.height,
-      duration: state.config.duration,
-      mode: modalRecordMode,
-      hiddenContainer,
-      canvas,
-      ctx,
-    });
-
-    // 替换当前渲染器
-    currentRenderer = htmlRenderer;
+    rebuildCustomHtmlRenderer();
 
     // 更新 demo 选择框显示
     if (elements.demoSelect) {
@@ -655,7 +721,7 @@ export function createApp(
   });
 
   modalElements.transparentModeSelect?.addEventListener('change', (e) => {
-    modalTransparentMode = (e.target as HTMLSelectElement).value as 'auto' | 'none' | 'custom';
+    modalTransparentMode = (e.target as HTMLSelectElement).value as TransparentMode;
     if (modalEditor) {
       modalPreview?.updateContent(processModalHtml(modalHtmlCode));
     }

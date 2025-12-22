@@ -17,12 +17,9 @@ import {
   type HtmlEditor,
   type IframePreview,
   type RecordMode,
+  injectTransparentBackground,
+  type TransparentMode,
 } from '@/editor';
-
-/**
- * 透明背景处理模式
- */
-type TransparentMode = 'auto' | 'none' | 'custom';
 
 /**
  * 应用状态
@@ -108,25 +105,10 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
    * 处理 HTML（注入透明背景样式）
    */
   function processHtml(html: string): string {
-    if (state.transparentMode === 'none') {
-      return html;
-    }
-
-    let bgStyle = '';
-    if (state.transparentMode === 'auto') {
-      bgStyle = 'background: transparent !important; background-color: transparent !important;';
-    } else if (state.transparentMode === 'custom') {
-      // 将指定颜色替换为透明（通过 CSS filter 或其他方式）
-      // 这里简单处理，实际可能需要更复杂的实现
-      bgStyle = 'background: transparent !important;';
-    }
-
-    const injectStyle = `<style id="__alpha_inject__">html,body{${bgStyle}}</style>`;
-
-    if (html.includes('</head>')) {
-      return html.replace('</head>', `${injectStyle}</head>`);
-    }
-    return injectStyle + html;
+    return injectTransparentBackground(html, {
+      mode: state.transparentMode,
+      customBgColor: state.customBgColor,
+    });
   }
 
   /**
@@ -215,50 +197,54 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
     updateButtons();
     updateProgress({ ...INITIAL_PROGRESS, phase: 'initializing' });
 
-    // 创建用于导出的 canvas
-    const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = state.config.width;
-    exportCanvas.height = state.config.height;
-    const exportCtx = exportCanvas.getContext('2d');
+    let htmlRenderer: ReturnType<typeof createHtmlExportRenderer> | null = null;
 
-    if (!exportCtx) {
+    try {
+      // 创建用于导出的 canvas
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = state.config.width;
+      exportCanvas.height = state.config.height;
+      const exportCtx = exportCanvas.getContext('2d');
+
+      if (!exportCtx) {
+        throw new Error('无法创建导出 Canvas');
+      }
+
+      // 创建 HTML 渲染器
+      htmlRenderer = createHtmlExportRenderer({
+        html: processHtml(editor.getCode()),
+        width: state.config.width,
+        height: state.config.height,
+        duration: state.config.duration,
+        mode: state.recordMode,
+        hiddenContainer: elements.hiddenContainer,
+        canvas: exportCanvas,
+        ctx: exportCtx,
+      });
+
+      // 创建导出控制器
+      exportController = createExportController(
+        exportCanvas,
+        htmlRenderer,
+        state.config,
+        updateProgress
+      );
+
+      const result = await exportController.start();
+      state.result = result;
+
+      if (!result.success) {
+        console.error('导出失败:', result.error);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('导出异常:', error);
+      state.result = { success: false, error: message };
+      updateProgress({ ...INITIAL_PROGRESS, phase: 'error', error: message });
+    } finally {
       state.isExporting = false;
       updateButtons();
-      console.error('无法创建导出 Canvas');
-      return;
-    }
-
-    // 创建 HTML 渲染器
-    const htmlRenderer = createHtmlExportRenderer({
-      html: processHtml(editor.getCode()),
-      width: state.config.width,
-      height: state.config.height,
-      duration: state.config.duration,
-      mode: state.recordMode,
-      hiddenContainer: elements.hiddenContainer,
-      canvas: exportCanvas,
-      ctx: exportCtx,
-    });
-
-    // 创建导出控制器
-    exportController = createExportController(
-      exportCanvas,
-      htmlRenderer,
-      state.config,
-      updateProgress
-    );
-
-    const result = await exportController.start();
-    state.result = result;
-    state.isExporting = false;
-
-    // 清理渲染器
-    htmlRenderer.dispose?.();
-
-    updateButtons();
-
-    if (!result.success) {
-      console.error('导出失败:', result.error);
+      htmlRenderer?.dispose?.();
     }
   }
 
