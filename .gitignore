@@ -26,3 +26,6 @@ dist-ssr
 # Server runtime files
 server.pid
 server.log
+
+# Local tooling
+.serena/
