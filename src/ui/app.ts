@@ -17,18 +17,22 @@ import {
   INITIAL_PROGRESS,
 } from '@/core/types';
 import { createExportController, ExportController } from '@/core/export-controller';
-import { detectEnvironment, checkMemoryRisk, downloadBlob } from '@/utils';
+import { detectEnvironment, checkMemoryRisk, downloadBlob, withTimeout } from '@/utils';
 import { getCodecDisplayName } from '@/encoder';
 import { DEMO_ANIMATIONS } from '@/demo';
 import {
   createHtmlEditor,
   createIframePreview,
   createHtmlExportRenderer,
+  createFrameCache,
+  type FrameCache,
   DEFAULT_HTML_TEMPLATE,
   REALTIME_HTML_TEMPLATE,
+  GLASS_CARD_STATS_TEMPLATE,
   type HtmlEditor,
   type IframePreview,
   type RecordMode,
+  type CaptureEngine,
   injectTransparentBackground,
   type TransparentMode,
 } from '@/editor';
@@ -46,6 +50,8 @@ interface AppState {
   contentScale: number; // 动画内容缩放比例
   playbackRate: number; // 播放速度（影响导出）
   loopPreview: boolean; // 预览是否循环
+  previewFps: 10 | 15 | 30;
+  previewScale: 0.5 | 0.75 | 1;
   currentDemoId: string;
 }
 
@@ -72,6 +78,8 @@ export function createApp(
     contentScale: 1, // 默认 1x
     playbackRate: 1, // 默认 1x
     loopPreview: true,
+    previewFps: 15,
+    previewScale: 0.5,
     currentDemoId: DEMO_ANIMATIONS[0]?.id ?? '',
   };
 
@@ -87,6 +95,7 @@ export function createApp(
         html: string;
         recordMode: RecordMode;
         transparentMode: TransparentMode;
+        captureEngine: CaptureEngine;
       }
     | null = null;
   let customHtmlRenderer: CanvasRenderer | null = null;
@@ -99,7 +108,9 @@ export function createApp(
     if (!hiddenContainer) {
       hiddenContainer = document.createElement('div');
       hiddenContainer.id = 'hidden-render-container';
-      hiddenContainer.style.cssText = 'position: absolute; left: -9999px; top: -9999px;';
+      // 使用 opacity: 0 而不是移出屏幕，防止浏览器对不可见 iframe 进行资源加载节流
+      // 注意：不能用 position: fixed/absolute 脱离文档流太远，否则 SnapDOM 计算坐标可能出错
+      hiddenContainer.style.cssText = 'position: absolute; left: 0; top: 0; width: 100px; height: 100px; z-index: -9999; pointer-events: none; overflow: hidden; opacity: 0.01;';
       document.body.appendChild(hiddenContainer);
     }
 
@@ -110,10 +121,8 @@ export function createApp(
   function rebuildCustomHtmlRenderer(): void {
     if (!customHtmlState) return;
 
-    // 清理旧 renderer，避免 iframe 堆积
     customHtmlRenderer?.dispose?.();
 
-    // HTML 渲染器的输出尺寸必须与 config 一致，否则会出现裁剪（文字“消失”）
     canvas.width = state.config.width;
     canvas.height = state.config.height;
 
@@ -127,6 +136,7 @@ export function createApp(
       height: state.config.height,
       duration: state.config.duration,
       mode: customHtmlState.recordMode,
+      captureEngine: customHtmlState.captureEngine,
       hiddenContainer: getOrCreateCustomHtmlHiddenContainer(),
       canvas,
       ctx,
@@ -134,6 +144,30 @@ export function createApp(
 
     currentRenderer = customHtmlRenderer;
     state.currentDemoId = 'custom-html';
+  }
+
+  function rebuildCustomHtmlPreviewRenderer(): void {
+    if (!customHtmlState || !previewRenderCtx) return;
+
+    customHtmlPreviewRenderer?.dispose?.();
+
+    const exportHtml = injectTransparentBackground(customHtmlState.html, {
+      mode: customHtmlState.transparentMode,
+    });
+
+    customHtmlPreviewRenderer = createHtmlExportRenderer({
+      html: exportHtml,
+      width: state.config.width,
+      height: state.config.height,
+      duration: state.config.duration,
+      mode: customHtmlState.recordMode,
+      captureEngine: customHtmlState.captureEngine,
+      previewScale: state.previewScale,
+      disableFontEmbed: true, // 预览时禁用字体嵌入，防止卡死并提升速度
+      hiddenContainer: getOrCreateCustomHtmlHiddenContainer(),
+      canvas: previewRenderCanvas,
+      ctx: previewRenderCtx,
+    });
   }
 
   // 检测环境
@@ -146,6 +180,10 @@ export function createApp(
   // 创建预览 Canvas（用于所见即所得预览）
   const previewCanvas = document.createElement('canvas');
   const previewCtx = previewCanvas.getContext('2d');
+  const previewRenderCanvas = document.createElement('canvas');
+  const previewRenderCtx = previewRenderCanvas.getContext('2d');
+  let previewFrameCache: FrameCache | null = null;
+  let customHtmlPreviewRenderer: CanvasRenderer | null = null;
 
   // 获取 DOM 元素
   const elements = {
@@ -163,6 +201,8 @@ export function createApp(
     loopPreviewBtn: container.querySelector('#toggle-loop-preview') as HTMLButtonElement,
     resetPreviewBtn: container.querySelector('#reset-preview-btn') as HTMLButtonElement,
     fpsSelect: container.querySelector('#fps-select') as HTMLSelectElement,
+    previewFpsSelect: container.querySelector('#preview-fps-select') as HTMLSelectElement,
+    previewScaleSelect: container.querySelector('#preview-scale-select') as HTMLSelectElement,
     durationSelect: container.querySelector('#duration-select') as HTMLSelectElement,
     riskWarning: container.querySelector('.risk-warning'),
     progressSection: container.querySelector('.progress-section'),
@@ -278,7 +318,80 @@ export function createApp(
     }
   }
 
+  // 预览渲染状态（用于避免“卡死后永远不再渲染”以及避免旧帧覆盖新状态）
+  const PREVIEW_RENDER_TIMEOUT_MS = 60000; // 增加到 60秒
+  let previewRenderInFlight:
+    | {
+        id: number;
+        startedAt: number;
+        renderer: CanvasRenderer;
+        generation: number;
+      }
+    | null = null;
+  let previewRenderSeq = 0;
+  let previewGeneration = 0;
+  let lastPreviewRenderTs = 0;
+
+  function invalidatePreview(): void {
+    previewGeneration++;
+    previewRenderInFlight = null;
+    lastPreviewRenderTs = 0;
+
+    // 视觉立即反馈：先清空当前预览帧，避免用户误以为按钮没生效
+    try {
+      previewCtx?.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    } catch {
+      // ignore
+    }
+  }
+
+  function resetPreviewCache(): void {
+    previewFrameCache?.dispose();
+    previewFrameCache = null;
+    customHtmlPreviewRenderer?.dispose?.();
+    customHtmlPreviewRenderer = null;
+  }
+
+  function ensureCustomHtmlPreviewRenderer(): CanvasRenderer | null {
+    if (!customHtmlState) return null;
+    if (!customHtmlPreviewRenderer) {
+      rebuildCustomHtmlPreviewRenderer();
+    }
+    return customHtmlPreviewRenderer;
+  }
+
+  function ensurePreviewFrameCache(): FrameCache | null {
+    if (state.currentDemoId !== 'custom-html' || !customHtmlState) return null;
+
+    const previewRenderer = ensureCustomHtmlPreviewRenderer();
+    if (!previewRenderer) return null;
+
+    if (!previewFrameCache) {
+      const maxFrames = Math.max(30, state.previewFps * 4);
+      previewFrameCache = createFrameCache({
+        maxFrames,
+        previewFps: state.previewFps,
+        duration: state.config.duration,
+        onRenderFrame: async (frameIndex) => {
+          const t = Math.min(frameIndex / state.previewFps, previewRenderer.duration);
+          try {
+            await Promise.resolve(previewRenderer.renderAt(t));
+          } catch (e) {
+            console.warn(`帧渲染失败 [${frameIndex}]:`, e);
+            throw e;
+          }
+          return createImageBitmap(previewRenderCanvas);
+        },
+      });
+    }
+
+    return previewFrameCache;
+  }
+
   function resetPreview(): void {
+    // 立即生效：防止上一帧异步 renderAt 完成后把旧画面覆盖回来
+    invalidatePreview();
+
     animationStartTime = performance.now();
     animationPausedTime = 0;
 
@@ -290,6 +403,7 @@ export function createApp(
 
   // 切换 Demo 动画
   function switchDemo(demoId: string): void {
+    invalidatePreview();
     if (demoId === 'custom-html') {
       if (customHtmlRenderer) {
         currentRenderer = customHtmlRenderer;
@@ -300,6 +414,8 @@ export function createApp(
       }
       return;
     }
+
+    resetPreviewCache();
 
     const demo = DEMO_ANIMATIONS.find(d => d.id === demoId);
     if (demo) {
@@ -315,42 +431,106 @@ export function createApp(
   }
 
   // 渲染预览帧（所见即所得）- 支持异步渲染器
-  let isRenderingFrame = false;
-
   async function renderPreviewFrame(t: number): Promise<void> {
-    if (!previewCtx || isRenderingFrame) return;
+    if (!previewCtx) return;
 
-    isRenderingFrame = true;
+    const rendererAtStart = currentRenderer;
+    const generationAtStart = previewGeneration;
+
+    const now = performance.now();
+    if (previewRenderInFlight) {
+      // 防止“永远 pending 导致全局预览卡死”
+      if (now - previewRenderInFlight.startedAt < PREVIEW_RENDER_TIMEOUT_MS) return;
+
+      console.warn('预览渲染超时，强制解锁并尝试恢复');
+      previewRenderInFlight = null;
+      previewGeneration++;
+
+      // 自定义 HTML 最容易卡死：重建 iframe 尝试恢复
+      if (state.currentDemoId === 'custom-html') {
+        try {
+          rebuildCustomHtmlRenderer();
+        } catch (e) {
+          console.error('重建自定义 HTML 渲染器失败:', e);
+        }
+      }
+    }
+
+    const jobId = ++previewRenderSeq;
+    previewRenderInFlight = {
+      id: jobId,
+      startedAt: now,
+      renderer: rendererAtStart,
+      generation: generationAtStart,
+    };
 
     try {
-      // 先在源 Canvas 上渲染动画（支持异步）
-      try {
-        await currentRenderer.renderAt(t);
-      } catch (error) {
-        // 避免未处理 Promise 拒绝导致循环异常；并为“资源 load 卡住”类问题留出恢复机会
-        console.error('预览渲染失败:', error);
+      const cache = ensurePreviewFrameCache();
+      
+      if (cache && state.currentDemoId === 'custom-html') {
+        const frameIndex = Math.max(0, Math.floor(t * state.previewFps));
+        const bitmap = await cache.getOrRender(frameIndex);
+
+        if (
+          previewGeneration !== generationAtStart ||
+          currentRenderer !== rendererAtStart ||
+          previewRenderInFlight?.id !== jobId ||
+          !bitmap
+        ) {
+          return;
+        }
+
+        previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+
+        const scaledWidth = currentRenderer.width * state.contentScale;
+        const scaledHeight = currentRenderer.height * state.contentScale;
+        const offsetX = Math.round((previewCanvas.width - scaledWidth) / 2);
+        const offsetY = Math.round((previewCanvas.height - scaledHeight) / 2);
+
+        previewCtx.drawImage(
+          bitmap,
+          0, 0, bitmap.width, bitmap.height,
+          offsetX, offsetY, scaledWidth, scaledHeight
+        );
+
+        const prefetchAhead = Math.min(30, state.previewFps);
+        cache.prefetch(frameIndex, prefetchAhead);
         return;
       }
 
-      // 清除预览 Canvas
+      await withTimeout(
+        Promise.resolve(rendererAtStart.renderAt(t)),
+        PREVIEW_RENDER_TIMEOUT_MS,
+        '预览 renderAt 超时'
+      );
+
+      if (
+        previewGeneration !== generationAtStart ||
+        currentRenderer !== rendererAtStart ||
+        previewRenderInFlight?.id !== jobId
+      ) {
+        return;
+      }
+
       previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
 
-      // 计算缩放后的尺寸
       const scaledWidth = currentRenderer.width * state.contentScale;
       const scaledHeight = currentRenderer.height * state.contentScale;
+      const offsetX = Math.round((previewCanvas.width - scaledWidth) / 2);
+      const offsetY = Math.round((previewCanvas.height - scaledHeight) / 2);
 
-      // 居中绘制
-      const offsetX = (previewCanvas.width - scaledWidth) / 2;
-      const offsetY = (previewCanvas.height - scaledHeight) / 2;
-
-      // 将源 Canvas 内容缩放绘制到预览 Canvas
       previewCtx.drawImage(
         canvas,
         0, 0, currentRenderer.width, currentRenderer.height,
         offsetX, offsetY, scaledWidth, scaledHeight
       );
+
+    } catch (error) {
+      console.error('预览渲染失败:', error);
     } finally {
-      isRenderingFrame = false;
+      if (previewRenderInFlight?.id === jobId) {
+        previewRenderInFlight = null;
+      }
     }
   }
 
@@ -496,6 +676,7 @@ export function createApp(
     updateToggleButtons();
 
     if (state.currentDemoId === 'custom-html') {
+      resetPreviewCache();
       rebuildCustomHtmlRenderer();
     }
   });
@@ -543,6 +724,7 @@ export function createApp(
     updateRiskWarning();
 
     if (state.currentDemoId === 'custom-html') {
+      resetPreviewCache();
       rebuildCustomHtmlRenderer();
     }
   }
@@ -614,8 +796,23 @@ export function createApp(
 
   // 事件监听 - 循环开关
   elements.loopPreviewBtn?.addEventListener('click', () => {
+    // 保持时间线连续：从“当前画面”继续（而不是因为 elapsed 已超过 duration 直接跳到末尾）
+    const now = performance.now();
+    const duration = currentRenderer.duration;
+    if (duration > 0) {
+      const elapsed =
+        ((now - animationStartTime) / 1000) * state.playbackRate + animationPausedTime;
+      const currentT = state.loopPreview ? (elapsed % duration) : Math.min(elapsed, duration);
+      animationStartTime = now;
+      animationPausedTime = currentT;
+    } else {
+      animationStartTime = now;
+      animationPausedTime = 0;
+    }
+
     state.loopPreview = !state.loopPreview;
     updatePreviewControls();
+    invalidatePreview();
   });
 
   // 事件监听 - 重置预览
@@ -623,7 +820,19 @@ export function createApp(
     resetPreview();
   });
 
-  // 事件监听 - 帧率
+  elements.previewFpsSelect?.addEventListener('change', (e) => {
+    state.previewFps = Number((e.target as HTMLSelectElement).value) as 10 | 15 | 30;
+    resetPreviewCache();
+    invalidatePreview();
+  });
+
+  elements.previewScaleSelect?.addEventListener('change', (e) => {
+    state.previewScale = Number((e.target as HTMLSelectElement).value) as 0.5 | 0.75 | 1;
+    resetPreviewCache();
+    updatePreview();
+    invalidatePreview();
+  });
+
   elements.fpsSelect?.addEventListener('change', (e) => {
     state.config.fps = Number((e.target as HTMLSelectElement).value) as FpsOption;
     updateRiskWarning();
@@ -634,7 +843,10 @@ export function createApp(
     state.config.duration = Number((e.target as HTMLSelectElement).value);
     updateRiskWarning();
 
+    modalPreview?.setDurationSeconds(state.config.duration);
+
     if (state.currentDemoId === 'custom-html') {
+      resetPreviewCache();
       rebuildCustomHtmlRenderer();
     }
   });
@@ -648,6 +860,8 @@ export function createApp(
   let modalPreview: IframePreview | null = null;
   let modalRecordMode: RecordMode = 'deterministic';
   let modalTransparentMode: TransparentMode = 'auto';
+  // 默认使用 html2canvas 预览，兼容性更好；SnapDOM 虽然快但容易在隐藏 iframe 中失效
+  let modalCaptureEngine: CaptureEngine = 'html2canvas';
   let modalHtmlCode = DEFAULT_HTML_TEMPLATE;
 
   const modalElements = {
@@ -656,6 +870,7 @@ export function createApp(
     previewContainer: container.querySelector('#modal-preview-container') as HTMLElement,
     recordModeSelect: container.querySelector('#modal-record-mode') as HTMLSelectElement,
     transparentModeSelect: container.querySelector('#modal-transparent-mode') as HTMLSelectElement,
+    captureEngineSelect: container.querySelector('#modal-capture-engine') as HTMLSelectElement,
     openBtn: container.querySelector('#open-html-editor-btn') as HTMLButtonElement,
     closeBtn: container.querySelector('#close-html-editor-btn') as HTMLButtonElement,
     applyBtn: container.querySelector('#apply-html-btn') as HTMLButtonElement,
@@ -690,9 +905,11 @@ export function createApp(
           container: modalElements.previewContainer,
           width: state.config.width,
           height: state.config.height,
+          durationSeconds: state.config.duration,
         });
       } else {
         modalPreview.resize(state.config.width, state.config.height);
+        modalPreview.setDurationSeconds(state.config.duration);
       }
       modalPreview.updateContent(processModalHtml(modalHtmlCode));
     }
@@ -735,8 +952,10 @@ export function createApp(
       html: modalHtmlCode,
       recordMode: modalRecordMode,
       transparentMode: modalTransparentMode,
+      captureEngine: modalCaptureEngine,
     };
 
+    resetPreviewCache();
     rebuildCustomHtmlRenderer();
 
     // 更新 demo 选择框显示
@@ -779,6 +998,10 @@ export function createApp(
     }
   });
 
+  modalElements.captureEngineSelect?.addEventListener('change', (e) => {
+    modalCaptureEngine = (e.target as HTMLSelectElement).value as CaptureEngine;
+  });
+
   modalElements.templateBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
       const templateType = btn.dataset.template;
@@ -788,6 +1011,10 @@ export function createApp(
         modalPreview?.updateContent(processModalHtml(modalHtmlCode));
       } else if (templateType === 'realtime' && modalEditor) {
         modalHtmlCode = REALTIME_HTML_TEMPLATE;
+        modalEditor.setCode(modalHtmlCode);
+        modalPreview?.updateContent(processModalHtml(modalHtmlCode));
+      } else if (templateType === 'glass-card' && modalEditor) {
+        modalHtmlCode = GLASS_CARD_STATS_TEMPLATE;
         modalEditor.setCode(modalHtmlCode);
         modalPreview?.updateContent(processModalHtml(modalHtmlCode));
       }
@@ -818,7 +1045,14 @@ export function createApp(
       const elapsed = ((timestamp - animationStartTime) / 1000) * state.playbackRate + animationPausedTime;
       const duration = currentRenderer.duration;
       const t = state.loopPreview ? (elapsed % duration) : Math.min(elapsed, duration);
-      renderPreviewFrame(t);
+
+      // 自定义 HTML 预览：html2canvas 极重，降低渲染频率避免 UI 卡死
+      const targetFps = state.currentDemoId === 'custom-html' ? state.previewFps : 60;
+      const minInterval = 1000 / targetFps;
+      if (timestamp - lastPreviewRenderTs >= minInterval) {
+        lastPreviewRenderTs = timestamp;
+        renderPreviewFrame(t);
+      }
     }
     animationId = requestAnimationFrame(previewLoop);
   }
@@ -986,6 +1220,24 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
           </div>
 
           <div class="form-group">
+            <label class="form-label">预览帧率</label>
+            <select id="preview-fps-select" class="form-select">
+              <option value="10" ${state.previewFps === 10 ? 'selected' : ''}>10 fps</option>
+              <option value="15" ${state.previewFps === 15 ? 'selected' : ''}>15 fps</option>
+              <option value="30" ${state.previewFps === 30 ? 'selected' : ''}>30 fps</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">预览分辨率</label>
+            <select id="preview-scale-select" class="form-select">
+              <option value="0.5" ${state.previewScale === 0.5 ? 'selected' : ''}>0.5x</option>
+              <option value="0.75" ${state.previewScale === 0.75 ? 'selected' : ''}>0.75x</option>
+              <option value="1" ${state.previewScale === 1 ? 'selected' : ''}>1x</option>
+            </select>
+          </div>
+
+          <div class="form-group">
             <label class="form-label">帧率</label>
             <select id="fps-select" class="form-select">
               <option value="30" selected>30 fps</option>
@@ -1053,6 +1305,7 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
               <div class="editor-toolbar">
                 <button class="template-btn" data-template="deterministic">确定性模板</button>
                 <button class="template-btn" data-template="realtime">实时模板</button>
+                <button class="template-btn" data-template="glass-card">卡片示例</button>
                 <select id="modal-record-mode" class="form-select" style="width: auto;">
                   <option value="deterministic">确定性模式</option>
                   <option value="realtime">实时模式</option>
@@ -1063,6 +1316,10 @@ function createAppHTML(state: AppState, canUseMultiThread: boolean): string {
             <div class="html-editor-right">
               <div class="modal-preview-header">
                 <span>预览</span>
+                <select id="modal-capture-engine" class="form-select" style="width: auto;">
+                  <option value="snapdom" selected>SnapDOM (推荐)</option>
+                  <option value="html2canvas">html2canvas</option>
+                </select>
                 <select id="modal-transparent-mode" class="form-select" style="width: auto;">
                   <option value="auto">自动透明</option>
                   <option value="none">不处理</option>

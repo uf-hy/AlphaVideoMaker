@@ -26,3 +26,5 @@ export {
   suggestGC,
   type MemoryUsage,
 } from './memory';
+
+export { withTimeout, TimeoutError } from './async';

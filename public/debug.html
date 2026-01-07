@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>截图引擎调试</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; padding: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #00d9ff; }
+    .test-section { margin: 20px 0; padding: 15px; background: #16213e; border-radius: 8px; }
+    .test-section h2 { margin-top: 0; color: #ffd700; }
+    button { padding: 10px 20px; margin: 5px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+    button.primary { background: #00d9ff; color: #000; }
+    button.secondary { background: #ffd700; color: #000; }
+    button.danger { background: #ff4757; color: #fff; }
+    .result { margin-top: 10px; padding: 10px; background: #0f0f23; border-radius: 4px; font-family: monospace; white-space: pre-wrap; max-height: 200px; overflow: auto; }
+    .result.success { border-left: 4px solid #00ff88; }
+    .result.error { border-left: 4px solid #ff4757; }
+    .result.pending { border-left: 4px solid #ffd700; }
+    .preview-row { display: flex; gap: 20px; flex-wrap: wrap; }
+    .preview-box { flex: 1; min-width: 300px; }
+    .preview-box canvas, .preview-box iframe { 
+      width: 100%; 
+      height: 400px; 
+      border: 2px solid #333; 
+      background: repeating-conic-gradient(#808080 0% 25%, transparent 0% 50%) 50% / 20px 20px;
+      object-fit: contain;
+    }
+    iframe { display: block; }
+    #log { height: 300px; overflow: auto; background: #0f0f23; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+    .log-entry { margin: 2px 0; }
+    .log-entry.info { color: #00d9ff; }
+    .log-entry.success { color: #00ff88; }
+    .log-entry.error { color: #ff4757; }
+    .log-entry.warn { color: #ffd700; }
+  </style>
+</head>
+<body>
+  <h1>截图引擎最小化调试</h1>
+  
+  <div class="test-section">
+    <h2>1. 测试目标</h2>
+    <div class="preview-row">
+      <div class="preview-box">
+        <p>源 iframe (srcdoc)</p>
+        <iframe id="source-iframe" sandbox="allow-scripts allow-same-origin"></iframe>
+      </div>
+      <div class="preview-box">
+        <p>截图结果 Canvas</p>
+        <canvas id="result-canvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="test-section">
+    <h2>2. 测试步骤</h2>
+    <button class="primary" id="btn-step1">Step 1: 加载 iframe</button>
+    <button class="primary" id="btn-step2">Step 2: 检查 ready 状态</button>
+    <button class="secondary" id="btn-step3">Step 3: html2canvas 截图</button>
+    <button class="secondary" id="btn-step4">Step 4: SnapDOM 截图</button>
+    <button class="secondary" id="btn-step8">Step 8: modern-screenshot 截图</button>
+    <button class="secondary" id="btn-step9">Step 9: html-to-image 截图</button>
+    <button class="secondary" id="btn-step10">Step 10: dom-to-image-more 截图</button>
+    <button class="danger" id="btn-step5">Step 5: 检查 iframe 可访问性</button>
+    <button class="primary" id="btn-step6">Step 6: 动画播放测试 (html2canvas)</button>
+    <button class="primary" id="btn-step7">Step 7: 动画播放测试 (SnapDOM)</button>
+    <button class="primary" id="btn-step11">Step 11: 动画播放测试 (html-to-image)</button>
+    <button class="primary" id="btn-step12">Step 12: 动画播放测试 (dom-to-image-more)</button>
+    <button class="primary" id="btn-step13">Step 13: 动画播放测试 (modern-screenshot)</button>
+    <button class="danger" id="btn-stop">停止动画</button>
+    <button class="danger" id="btn-clear">清空日志</button>
+
+    <div style="margin-top: 15px; border-top: 1px solid #333; padding-top: 10px;">
+      <span style="color: #ffd700; font-weight: bold; font-size: 14px; margin: 0 5px;">导出基准测试 (720x720, 3s, MOV)</span>
+      <button class="primary" id="btn-export-dom-to-image">dom-to-image-more</button>
+      <button class="primary" id="btn-export-modern-screenshot">modern-screenshot</button>
+      <span id="export-status" style="margin-left: 10px; font-family: monospace; font-size: 12px; color: #888;"></span>
+    </div>
+
+    <div id="step-result" class="result pending">等待测试...</div>
+  </div>
+
+  <div class="test-section">
+    <h2>3. 实时日志</h2>
+    <div id="log"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@zumer/snapdom@2.0.1/dist/snapdom.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dom-to-image-more@3.2.0/dist/dom-to-image-more.min.js"></script>
+  <script type="module">
+    import * as modernScreenshot from 'https://cdn.jsdelivr.net/npm/modern-screenshot@4.6.0/dist/index.mjs';
+    window.modernScreenshot = modernScreenshot;
+  </script>
+  <script>
+    (function() {
+      var iframe = document.getElementById('source-iframe');
+      var canvas = document.getElementById('result-canvas');
+      var ctx = canvas.getContext('2d');
+      var resultEl = document.getElementById('step-result');
+      var logEl = document.getElementById('log');
+      var exportStatusEl = document.getElementById('export-status');
+
+      if (!ctx) {
+        alert('Canvas 2D 上下文获取失败，浏览器不支持');
+        return;
+      }
+
+      var TEST_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        :root { --t: 1; }
+        body { margin: 0; padding: 0; background: transparent; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; overflow: hidden; }
+        .card {
+            width: 400px;
+            background: rgba(255, 255, 255, 1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            opacity: var(--t);
+            transform: translateY(calc((1 - var(--t)) * 50px));
+        }
+        .title { font-size: 24px; font-weight: 800; color: #333; margin-bottom: 25px; display: flex; align-items: center; }
+        .title::before { content: ''; width: 6px; height: 24px; background: #007aff; border-radius: 3px; margin-right: 12px; }
+        .item { margin-bottom: 20px; position: relative; }
+        .item-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+        .label { font-size: 16px; color: #555; font-weight: 600; }
+        .amount { font-size: 20px; font-weight: 900; color: #000; }
+        .unit { font-size: 14px; font-weight: normal; color: #666; }
+        .progress-bg { height: 10px; background: rgba(0,0,0,0.05); border-radius: 5px; overflow: hidden; }
+        .progress-bar { height: 100%; border-radius: 5px; }
+        /* 进度条宽度也用 --t 控制 */
+        .c-low { background: linear-gradient(90deg, #34c759, #30d158); width: calc(var(--t) * 33%); }
+        .c-mid { background: linear-gradient(90deg, #ff9500, #ffba00); width: calc(var(--t) * 60%); }
+        .c-high { background: linear-gradient(90deg, #ff3b30, #ff453a); width: calc(var(--t) * 100%); }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="title">工业补助统计</div>
+        <div class="item">
+            <div class="item-header">
+                <span class="label">螺蛳粉补助</span>
+                <span class="amount">33 <span class="unit">万</span></span>
+            </div>
+            <div class="progress-bg">
+                <div class="progress-bar c-low"></div>
+            </div>
+        </div>
+        <div class="item">
+            <div class="item-header">
+                <span class="label">剁椒鱼头补助</span>
+                <span class="amount">60 <span class="unit">万</span></span>
+            </div>
+            <div class="progress-bg">
+                <div class="progress-bar c-mid"></div>
+            </div>
+        </div>
+        <div class="item">
+            <div class="item-header">
+                <span class="label">螺丝鸭脚煲补助</span>
+                <span class="amount">100 <span class="unit">万</span></span>
+            </div>
+            <div class="progress-bg">
+                <div class="progress-bar c-high"></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`;
+
+      function log(msg, type) {
+        type = type || 'info';
+        var entry = document.createElement('div');
+        entry.className = 'log-entry ' + type;
+        entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+        logEl.appendChild(entry);
+        logEl.scrollTop = logEl.scrollHeight;
+        console.log('[' + type + ']', msg);
+      }
+
+      function setResult(msg, type) {
+        resultEl.textContent = msg;
+        resultEl.className = 'result ' + type;
+      }
+
+      function safeGetPixel(targetCtx, w, h) {
+        if (w <= 0 || h <= 0) return [0, 0, 0, 0];
+        var x = Math.floor(w / 2);
+        var y = Math.floor(h / 2);
+        try {
+          return targetCtx.getImageData(x, y, 1, 1).data;
+        } catch (e) {
+          log('getImageData 失败: ' + e.message, 'error');
+          return [0, 0, 0, 0];
+        }
+      }
+
+      function setExportStatus(text) {
+        if (!exportStatusEl) return;
+        exportStatusEl.textContent = text;
+      }
+
+      var exportModulesPromise = null;
+      function loadExportModules() {
+        if (exportModulesPromise) return exportModulesPromise;
+        exportModulesPromise = Promise.all([
+          import('/src/core/export-controller.ts'),
+          import('/src/editor/iframe-preview.ts'),
+          import('/src/utils/async.ts'),
+          import('/src/utils/blob-utils.ts')
+        ]).then(function(mods) {
+          return {
+            createExportController: mods[0].createExportController,
+            createIframePreview: mods[1].createIframePreview,
+            withTimeout: mods[2].withTimeout,
+            downloadBlob: mods[3].downloadBlob,
+          };
+        });
+        return exportModulesPromise;
+      }
+
+      function ensureHiddenContainer() {
+        var el = document.getElementById('export-hidden-container');
+        if (el) return el;
+        el = document.createElement('div');
+        el.id = 'export-hidden-container';
+        el.style.position = 'fixed';
+        el.style.left = '0';
+        el.style.top = '0';
+        el.style.opacity = '0.01';
+        el.style.pointerEvents = 'none';
+        el.style.zIndex = '-1';
+        document.body.appendChild(el);
+        return el;
+      }
+
+      window.addEventListener('error', function(e) {
+        log('全局错误: ' + (e.message || e.error), 'error');
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        log('Promise 未处理: ' + String(e.reason), 'error');
+      });
+
+      document.getElementById('btn-clear').addEventListener('click', function() {
+        logEl.innerHTML = '';
+      });
+
+      document.getElementById('btn-step1').addEventListener('click', function() {
+        log('Step 1: 开始加载 iframe...');
+        setResult('加载中...', 'pending');
+        
+        iframe.onload = function() {
+          log('iframe onload 事件触发', 'success');
+          setResult('iframe 加载完成', 'success');
+        };
+        
+        iframe.onerror = function(e) {
+          log('iframe onerror: ' + e, 'error');
+          setResult('iframe 加载失败', 'error');
+        };
+
+        iframe.srcdoc = TEST_HTML;
+      });
+
+      document.getElementById('btn-step2').addEventListener('click', function() {
+        log('Step 2: 检查 iframe ready 状态...');
+        
+        try {
+          var doc = iframe.contentDocument;
+          var win = iframe.contentWindow;
+          
+          log('  contentDocument: ' + (doc ? '存在' : '不存在'));
+          log('  contentWindow: ' + (win ? '存在' : '不存在'));
+          
+          if (doc) {
+            log('  readyState: ' + doc.readyState);
+            log('  body: ' + (doc.body ? '存在' : '不存在'));
+            if (doc.body) {
+              log('  body.innerHTML 长度: ' + doc.body.innerHTML.length);
+              log('  body.children 数量: ' + doc.body.children.length);
+            }
+            
+            var card = doc.querySelector('.card');
+            log('  .card 元素: ' + (card ? '找到' : '未找到'));
+            if (card) {
+              var rect = card.getBoundingClientRect();
+              log('  .card 尺寸: ' + rect.width + 'x' + rect.height, 'success');
+              var style = win.getComputedStyle(card);
+              log('  .card opacity: ' + style.opacity, 'info');
+              log('  .card transform: ' + style.transform, 'info');
+            }
+          }
+          
+          setResult('检查完成，查看日志', 'success');
+        } catch (e) {
+          log('检查失败: ' + e.message, 'error');
+          setResult('检查失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step3').addEventListener('click', async function() {
+        log('Step 3: 开始 html2canvas 截图...');
+        setResult('截图中...', 'pending');
+        
+        var start = performance.now();
+        
+        try {
+          if (typeof html2canvas === 'undefined') {
+            throw new Error('html2canvas 未加载，请检查 CDN 或网络');
+          }
+          log('  html2canvas 库已加载');
+
+          var doc = iframe.contentDocument;
+          if (!doc || !doc.body) {
+            throw new Error('iframe body 不存在，请先执行 Step 1');
+          }
+          
+          log('  目标元素: document.body');
+          log('  开始调用 html2canvas...');
+          
+          var capturedCanvas = await html2canvas(doc.body, {
+            backgroundColor: null,
+            width: 500,
+            height: 400,
+            windowWidth: 500,
+            windowHeight: 400,
+            logging: false,
+            useCORS: true,
+            allowTaint: true,
+          });
+          
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图完成，耗时: ' + elapsed + 'ms', 'success');
+          log('  Canvas 尺寸: ' + capturedCanvas.width + 'x' + capturedCanvas.height);
+          
+          var testCtx = capturedCanvas.getContext('2d');
+          if (!testCtx) {
+            throw new Error('无法获取截图 Canvas 的 2D 上下文');
+          }
+          
+          var pixel = safeGetPixel(testCtx, capturedCanvas.width, capturedCanvas.height);
+          log('  中心像素 RGBA: [' + pixel[0] + ', ' + pixel[1] + ', ' + pixel[2] + ', ' + pixel[3] + ']');
+          
+          if (pixel[3] === 0) {
+            log('  警告: 截图结果是透明的!', 'warn');
+          } else {
+            log('  截图有内容', 'success');
+          }
+          
+          canvas.width = capturedCanvas.width;
+          canvas.height = capturedCanvas.height;
+          ctx.drawImage(capturedCanvas, 0, 0);
+          
+          setResult('html2canvas 成功，耗时 ' + elapsed + 'ms', 'success');
+        } catch (e) {
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图失败 (' + elapsed + 'ms): ' + e.message, 'error');
+          console.error(e);
+          setResult('html2canvas 失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step4').addEventListener('click', async function() {
+        log('Step 4: 开始 SnapDOM 截图...');
+        setResult('截图中...', 'pending');
+        
+        var start = performance.now();
+        
+        try {
+          var root = window;
+          var snapdomApi =
+            root.snapdom ||
+            root.SnapDOM ||
+            root.Snapdom ||
+            (root.snapdom && (root.snapdom.snapdom || root.snapdom.default));
+
+          if (typeof snapdomApi !== 'function') {
+            log('  window.snapdom = ' + typeof root.snapdom, 'warn');
+            log('  window.SnapDOM = ' + typeof root.SnapDOM, 'warn');
+            log('  window.Snapdom = ' + typeof root.Snapdom, 'warn');
+            if (root.snapdom && typeof root.snapdom === 'object') {
+              log('  snapdom keys: ' + Object.keys(root.snapdom).join(', '), 'warn');
+            }
+            throw new Error('SnapDOM API 未找到，请检查 CDN 或全局导出名');
+          }
+          log('  SnapDOM 库已加载');
+
+          var doc = iframe.contentDocument;
+          if (!doc || !doc.body) {
+            throw new Error('iframe body 不存在，请先执行 Step 1');
+          }
+          
+          log('  目标元素: document.body');
+          log('  开始调用 snapdom...');
+          
+          var result = await snapdomApi(doc.body, {
+            scale: 1,
+            dpr: 1,
+          });
+          
+          var capturedCanvas;
+          if (result && typeof result.toCanvas === 'function') {
+            capturedCanvas = await result.toCanvas();
+          } else if (result && result.canvas) {
+            capturedCanvas = result.canvas;
+          } else if (result instanceof HTMLCanvasElement) {
+            capturedCanvas = result;
+          } else {
+            throw new Error('SnapDOM 返回格式未知: ' + typeof result);
+          }
+          
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图完成，耗时: ' + elapsed + 'ms', 'success');
+          log('  Canvas 尺寸: ' + capturedCanvas.width + 'x' + capturedCanvas.height);
+          
+          var testCtx = capturedCanvas.getContext('2d');
+          if (!testCtx) {
+            throw new Error('无法获取截图 Canvas 的 2D 上下文');
+          }
+          
+          var pixel = safeGetPixel(testCtx, capturedCanvas.width, capturedCanvas.height);
+          log('  中心像素 RGBA: [' + pixel[0] + ', ' + pixel[1] + ', ' + pixel[2] + ', ' + pixel[3] + ']');
+          
+          if (pixel[3] === 0) {
+            log('  警告: 截图结果是透明的!', 'warn');
+          } else {
+            log('  截图有内容', 'success');
+          }
+          
+          canvas.width = capturedCanvas.width;
+          canvas.height = capturedCanvas.height;
+          ctx.drawImage(capturedCanvas, 0, 0);
+          
+          setResult('SnapDOM 成功，耗时 ' + elapsed + 'ms', 'success');
+        } catch (e) {
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图失败 (' + elapsed + 'ms): ' + e.message, 'error');
+          console.error(e);
+          setResult('SnapDOM 失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step5').addEventListener('click', function() {
+        log('Step 5: 检查 iframe 可访问性...');
+        setResult('检查中...', 'pending');
+        
+        try {
+          var doc = iframe.contentDocument;
+          if (!doc) {
+            throw new Error('contentDocument 为 null，可能是跨域问题');
+          }
+          if (!doc.body) {
+            throw new Error('body 不存在，iframe 可能未加载');
+          }
+          
+          var rect = doc.body.getBoundingClientRect();
+          log('  iframe body 尺寸: ' + rect.width + 'x' + rect.height);
+          
+          var children = doc.body.children.length;
+          log('  body 子元素数量: ' + children);
+          
+          if (rect.width === 0 || rect.height === 0) {
+            log('  警告: body 尺寸为 0，内容可能不可见', 'warn');
+          } else {
+            log('  iframe 内容可访问且有尺寸', 'success');
+          }
+          
+          var card = doc.querySelector('.card');
+          if (card) {
+            var cardRect = card.getBoundingClientRect();
+            log('  .card 位置: (' + cardRect.left + ', ' + cardRect.top + ')', 'success');
+            log('  .card 尺寸: ' + cardRect.width + 'x' + cardRect.height, 'success');
+          }
+          
+          setResult('检查完成', 'success');
+        } catch (e) {
+          log('  检查失败: ' + e.message, 'error');
+          setResult('检查失败: ' + e.message, 'error');
+        }
+      });
+
+      var animationRunning = false;
+      var animationId = null;
+
+      document.getElementById('btn-stop').addEventListener('click', function() {
+        animationRunning = false;
+        if (animationId) {
+          cancelAnimationFrame(animationId);
+          animationId = null;
+        }
+        log('动画已停止', 'warn');
+        setResult('动画已停止', 'pending');
+      });
+
+      document.getElementById('btn-step8').addEventListener('click', async function() {
+        log('Step 8: modern-screenshot 截图...');
+        setResult('截图中...', 'pending');
+        
+        var start = performance.now();
+        
+        try {
+          var msApi = window.modernScreenshot;
+          if (!msApi) {
+            log('  window.modernScreenshot = ' + typeof window.modernScreenshot, 'warn');
+            throw new Error('modern-screenshot 未加载');
+          }
+          log('  modern-screenshot 库已加载');
+          log('  可用方法: ' + Object.keys(msApi).join(', '), 'info');
+
+          var doc = iframe.contentDocument;
+          if (!doc || !doc.body) {
+            throw new Error('iframe body 不存在，请先执行 Step 1');
+          }
+          
+          log('  目标元素: document.body');
+          log('  开始调用 domToCanvas...');
+          
+          var capturedCanvas = await msApi.domToCanvas(doc.body, {
+            backgroundColor: null,
+            width: 500,
+            height: 400,
+          });
+          
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图完成，耗时: ' + elapsed + 'ms', 'success');
+          log('  Canvas 尺寸: ' + capturedCanvas.width + 'x' + capturedCanvas.height);
+          
+          var testCtx = capturedCanvas.getContext('2d');
+          if (!testCtx) {
+            throw new Error('无法获取截图 Canvas 的 2D 上下文');
+          }
+          
+          var pixel = safeGetPixel(testCtx, capturedCanvas.width, capturedCanvas.height);
+          log('  中心像素 RGBA: [' + pixel[0] + ', ' + pixel[1] + ', ' + pixel[2] + ', ' + pixel[3] + ']');
+          
+          if (pixel[3] === 0) {
+            log('  警告: 截图结果是透明的!', 'warn');
+          } else {
+            log('  截图有内容', 'success');
+          }
+          
+          canvas.width = capturedCanvas.width;
+          canvas.height = capturedCanvas.height;
+          ctx.drawImage(capturedCanvas, 0, 0);
+          
+          setResult('modern-screenshot 成功，耗时 ' + elapsed + 'ms', 'success');
+        } catch (e) {
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图失败 (' + elapsed + 'ms): ' + e.message, 'error');
+          console.error(e);
+          setResult('modern-screenshot 失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step9').addEventListener('click', async function() {
+        log('Step 9: html-to-image 截图...');
+        setResult('截图中...', 'pending');
+
+        var start = performance.now();
+
+        try {
+          var hti = window.htmlToImage;
+          if (!hti) {
+            log('  window.htmlToImage = ' + typeof window.htmlToImage, 'warn');
+            throw new Error('html-to-image 未加载');
+          }
+          log('  html-to-image 库已加载');
+
+          var doc = iframe.contentDocument;
+          if (!doc || !doc.body) {
+            throw new Error('iframe body 不存在，请先执行 Step 1');
+          }
+
+          log('  目标元素: document.body');
+          log('  开始调用 toCanvas...');
+
+          var capturedCanvas = await hti.toCanvas(doc.body, {
+            backgroundColor: null,
+            width: 500,
+            height: 400,
+          });
+
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图完成，耗时: ' + elapsed + 'ms', 'success');
+          log('  Canvas 尺寸: ' + capturedCanvas.width + 'x' + capturedCanvas.height);
+
+          var testCtx = capturedCanvas.getContext('2d');
+          if (!testCtx) {
+            throw new Error('无法获取截图 Canvas 的 2D 上下文');
+          }
+
+          var pixel = safeGetPixel(testCtx, capturedCanvas.width, capturedCanvas.height);
+          log('  中心像素 RGBA: [' + pixel[0] + ', ' + pixel[1] + ', ' + pixel[2] + ', ' + pixel[3] + ']');
+
+          if (pixel[3] === 0) {
+            log('  警告: 截图结果是透明的!', 'warn');
+          } else {
+            log('  截图有内容', 'success');
+          }
+
+          canvas.width = capturedCanvas.width;
+          canvas.height = capturedCanvas.height;
+          ctx.drawImage(capturedCanvas, 0, 0);
+
+          setResult('html-to-image 成功，耗时 ' + elapsed + 'ms', 'success');
+        } catch (e) {
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图失败 (' + elapsed + 'ms): ' + e.message, 'error');
+          console.error(e);
+          setResult('html-to-image 失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step10').addEventListener('click', async function() {
+        log('Step 10: dom-to-image-more 截图...');
+        setResult('截图中...', 'pending');
+
+        var start = performance.now();
+
+        try {
+          var dti = window.domtoimage;
+          if (!dti) {
+            log('  window.domtoimage = ' + typeof window.domtoimage, 'warn');
+            throw new Error('dom-to-image-more 未加载');
+          }
+          log('  dom-to-image-more 库已加载');
+
+          var doc = iframe.contentDocument;
+          if (!doc || !doc.body) {
+            throw new Error('iframe body 不存在，请先执行 Step 1');
+          }
+
+          log('  目标元素: document.body');
+          log('  开始调用 toCanvas...');
+
+          var capturedCanvas = await dti.toCanvas(doc.body, {
+            bgcolor: null,
+            width: 500,
+            height: 400,
+          });
+
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图完成，耗时: ' + elapsed + 'ms', 'success');
+          log('  Canvas 尺寸: ' + capturedCanvas.width + 'x' + capturedCanvas.height);
+
+          var testCtx = capturedCanvas.getContext('2d');
+          if (!testCtx) {
+            throw new Error('无法获取截图 Canvas 的 2D 上下文');
+          }
+
+          var pixel = safeGetPixel(testCtx, capturedCanvas.width, capturedCanvas.height);
+          log('  中心像素 RGBA: [' + pixel[0] + ', ' + pixel[1] + ', ' + pixel[2] + ', ' + pixel[3] + ']');
+
+          if (pixel[3] === 0) {
+            log('  警告: 截图结果是透明的!', 'warn');
+          } else {
+            log('  截图有内容', 'success');
+          }
+
+          canvas.width = capturedCanvas.width;
+          canvas.height = capturedCanvas.height;
+          ctx.drawImage(capturedCanvas, 0, 0);
+
+          setResult('dom-to-image-more 成功，耗时 ' + elapsed + 'ms', 'success');
+        } catch (e) {
+          var elapsed = (performance.now() - start).toFixed(0);
+          log('  截图失败 (' + elapsed + 'ms): ' + e.message, 'error');
+          console.error(e);
+          setResult('dom-to-image-more 失败: ' + e.message, 'error');
+        }
+      });
+
+      document.getElementById('btn-step6').addEventListener('click', async function() {
+        log('Step 6: html2canvas 确定性动画测试...');
+        setResult('播放中... (html2canvas)', 'pending');
+        
+        var doc = iframe.contentDocument;
+        if (!doc || !doc.body) {
+          log('请先执行 Step 1', 'error');
+          return;
+        }
+
+        animationRunning = true;
+        var frameCount = 0;
+        var startTime = performance.now();
+        var totalFrames = 30;
+        var duration = 2.0;
+
+        canvas.width = 500;
+        canvas.height = 400;
+
+        async function captureFrame() {
+          if (!animationRunning || frameCount >= totalFrames) {
+            animationRunning = false;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+            log('动画完成: ' + frameCount + ' 帧, 耗时 ' + elapsed + 's', 'success');
+            setResult('html2canvas 动画完成', 'success');
+            return;
+          }
+
+          var t = frameCount / (totalFrames - 1);
+          doc.documentElement.style.setProperty('--t', t.toFixed(3));
+
+          await new Promise(function(r) { requestAnimationFrame(r); });
+
+          try {
+            var capturedCanvas = await html2canvas(doc.body, {
+              backgroundColor: null,
+              width: 500,
+              height: 400,
+              windowWidth: 500,
+              windowHeight: 400,
+              logging: false,
+              useCORS: true,
+              allowTaint: true,
+            });
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(capturedCanvas, 0, 0);
+            frameCount++;
+            
+            log('  帧 ' + frameCount + '/' + totalFrames + ', --t=' + t.toFixed(2), 'info');
+          } catch (e) {
+            log('帧渲染失败: ' + e.message, 'error');
+          }
+
+          if (animationRunning) {
+            setTimeout(captureFrame, 50);
+          }
+        }
+
+        captureFrame();
+      });
+
+      document.getElementById('btn-step7').addEventListener('click', async function() {
+        log('Step 7: SnapDOM 确定性动画测试...');
+        setResult('播放中... (SnapDOM)', 'pending');
+        
+        var doc = iframe.contentDocument;
+        if (!doc || !doc.body) {
+          log('请先执行 Step 1', 'error');
+          return;
+        }
+
+        var root = window;
+        var snapdomApi = root.snapdom || root.SnapDOM || root.Snapdom;
+        if (typeof snapdomApi !== 'function') {
+          log('SnapDOM 未加载', 'error');
+          return;
+        }
+
+        animationRunning = true;
+        var frameCount = 0;
+        var startTime = performance.now();
+        var totalFrames = 30;
+
+        canvas.width = 607;
+        canvas.height = 400;
+
+        async function captureFrame() {
+          if (!animationRunning || frameCount >= totalFrames) {
+            animationRunning = false;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+            log('动画完成: ' + frameCount + ' 帧, 耗时 ' + elapsed + 's', 'success');
+            setResult('SnapDOM 动画完成', 'success');
+            return;
+          }
+
+          var t = frameCount / (totalFrames - 1);
+          doc.documentElement.style.setProperty('--t', t.toFixed(3));
+
+          await new Promise(function(r) { requestAnimationFrame(r); });
+
+          try {
+            var result = await snapdomApi(doc.body, { scale: 1, dpr: 1 });
+            var capturedCanvas;
+            if (result && typeof result.toCanvas === 'function') {
+              capturedCanvas = await result.toCanvas();
+            } else if (result && result.canvas) {
+              capturedCanvas = result.canvas;
+            } else {
+              capturedCanvas = result;
+            }
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(capturedCanvas, 0, 0);
+            frameCount++;
+            
+            log('  帧 ' + frameCount + '/' + totalFrames + ', --t=' + t.toFixed(2), 'info');
+          } catch (e) {
+            log('帧渲染失败: ' + e.message, 'error');
+          }
+
+          if (animationRunning) {
+            setTimeout(captureFrame, 30);
+          }
+        }
+
+        captureFrame();
+      });
+
+      document.getElementById('btn-step11').addEventListener('click', async function() {
+        log('Step 11: html-to-image 确定性动画测试...');
+        setResult('播放中... (html-to-image)', 'pending');
+
+        var doc = iframe.contentDocument;
+        if (!doc || !doc.body) {
+          log('请先执行 Step 1', 'error');
+          return;
+        }
+
+        var hti = window.htmlToImage;
+        if (!hti || typeof hti.toCanvas !== 'function') {
+          log('html-to-image 未加载', 'error');
+          return;
+        }
+
+        animationRunning = true;
+        var frameCount = 0;
+        var startTime = performance.now();
+        var totalFrames = 30;
+
+        canvas.width = 500;
+        canvas.height = 400;
+
+        async function captureFrame() {
+          if (!animationRunning || frameCount >= totalFrames) {
+            animationRunning = false;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+            log('动画完成: ' + frameCount + ' 帧, 耗时 ' + elapsed + 's', 'success');
+            setResult('html-to-image 动画完成', 'success');
+            return;
+          }
+
+          var t = frameCount / (totalFrames - 1);
+          doc.documentElement.style.setProperty('--t', t.toFixed(3));
+
+          await new Promise(function(r) { requestAnimationFrame(r); });
+
+          try {
+            var capturedCanvas = await hti.toCanvas(doc.body, {
+              backgroundColor: null,
+              width: 500,
+              height: 400,
+            });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(capturedCanvas, 0, 0);
+            frameCount++;
+
+            log('  帧 ' + frameCount + '/' + totalFrames + ', --t=' + t.toFixed(2), 'info');
+          } catch (e) {
+            log('帧渲染失败: ' + e.message, 'error');
+          }
+
+          if (animationRunning) {
+            setTimeout(captureFrame, 50);
+          }
+        }
+
+        captureFrame();
+      });
+
+      document.getElementById('btn-step12').addEventListener('click', async function() {
+        log('Step 12: dom-to-image-more 确定性动画测试...');
+        setResult('播放中... (dom-to-image-more)', 'pending');
+
+        var doc = iframe.contentDocument;
+        if (!doc || !doc.body) {
+          log('请先执行 Step 1', 'error');
+          return;
+        }
+
+        var dti = window.domtoimage;
+        if (!dti || typeof dti.toCanvas !== 'function') {
+          log('dom-to-image-more 未加载', 'error');
+          return;
+        }
+
+        animationRunning = true;
+        var frameCount = 0;
+        var startTime = performance.now();
+        var totalFrames = 30;
+
+        canvas.width = 500;
+        canvas.height = 400;
+
+        async function captureFrame() {
+          if (!animationRunning || frameCount >= totalFrames) {
+            animationRunning = false;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+            log('动画完成: ' + frameCount + ' 帧, 耗时 ' + elapsed + 's', 'success');
+            setResult('dom-to-image-more 动画完成', 'success');
+            return;
+          }
+
+          var t = frameCount / (totalFrames - 1);
+          doc.documentElement.style.setProperty('--t', t.toFixed(3));
+
+          await new Promise(function(r) { requestAnimationFrame(r); });
+
+          try {
+            var capturedCanvas = await dti.toCanvas(doc.body, {
+              bgcolor: null,
+              width: 500,
+              height: 400,
+            });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(capturedCanvas, 0, 0);
+            frameCount++;
+
+            log('  帧 ' + frameCount + '/' + totalFrames + ', --t=' + t.toFixed(2), 'info');
+          } catch (e) {
+            log('帧渲染失败: ' + e.message, 'error');
+          }
+
+          if (animationRunning) {
+            setTimeout(captureFrame, 50);
+          }
+        }
+
+        captureFrame();
+      });
+
+      document.getElementById('btn-step13').addEventListener('click', async function() {
+        log('Step 13: modern-screenshot 确定性动画测试...');
+        setResult('播放中... (modern-screenshot)', 'pending');
+
+        var doc = iframe.contentDocument;
+        if (!doc || !doc.body) {
+          log('请先执行 Step 1', 'error');
+          return;
+        }
+
+        var msApi = window.modernScreenshot;
+        if (!msApi || typeof msApi.domToCanvas !== 'function') {
+          log('modern-screenshot 未加载', 'error');
+          return;
+        }
+
+        animationRunning = true;
+        var frameCount = 0;
+        var startTime = performance.now();
+        var totalFrames = 30;
+
+        canvas.width = 500;
+        canvas.height = 400;
+
+        async function captureFrame() {
+          if (!animationRunning || frameCount >= totalFrames) {
+            animationRunning = false;
+            var elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+            log('动画完成: ' + frameCount + ' 帧, 耗时 ' + elapsed + 's', 'success');
+            setResult('modern-screenshot 动画完成', 'success');
+            return;
+          }
+
+          var t = frameCount / (totalFrames - 1);
+          doc.documentElement.style.setProperty('--t', t.toFixed(3));
+
+          await new Promise(function(r) { requestAnimationFrame(r); });
+
+          try {
+            var capturedCanvas = await msApi.domToCanvas(doc.body, {
+              backgroundColor: null,
+              width: 500,
+              height: 400,
+            });
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(capturedCanvas, 0, 0);
+            frameCount++;
+
+            log('  帧 ' + frameCount + '/' + totalFrames + ', --t=' + t.toFixed(2), 'info');
+          } catch (e) {
+            log('帧渲染失败: ' + e.message, 'error');
+          }
+
+          if (animationRunning) {
+            setTimeout(captureFrame, 50);
+          }
+        }
+
+        captureFrame();
+      });
+
+      async function createDomExportRenderer(mods, options) {
+        var html = options.html;
+        var width = options.width;
+        var height = options.height;
+        var duration = options.duration;
+        var engine = options.engine;
+        var hiddenContainer = options.hiddenContainer;
+        var canvasEl = options.canvas;
+        var ctxEl = options.ctx;
+        var animateSeconds = options.animateSeconds;
+
+        var preview = mods.createIframePreview({
+          container: hiddenContainer,
+          width: width,
+          height: height,
+          durationSeconds: duration,
+        });
+        preview.setDurationSeconds(duration);
+        preview.updateContent(html);
+
+        var isReady = false;
+        var iframeEl = preview.getIframe();
+        iframeEl.addEventListener('load', function() {
+          isReady = true;
+        });
+
+        async function waitForReady() {
+          if (isReady) return;
+          await mods.withTimeout(waitForDomReady(iframeEl), 8000, 'iframe 初始化超时');
+          isReady = true;
+        }
+
+        async function waitForDomReady(el) {
+          while (true) {
+            var doc = el.contentDocument;
+            var hasBody = Boolean(doc && doc.body);
+            var readyState = doc && doc.readyState;
+            if (hasBody && (readyState === 'interactive' || readyState === 'complete')) {
+              return;
+            }
+            await new Promise(function(resolve) { requestAnimationFrame(resolve); });
+          }
+        }
+
+        function mapProgress(timeSec) {
+          if (timeSec <= animateSeconds) {
+            return Math.min(1, Math.max(0, timeSec / animateSeconds));
+          }
+          return 1;
+        }
+
+        async function captureWithEngine(doc) {
+          if (engine === 'dom-to-image-more') {
+            var dti = window.domtoimage;
+            if (!dti || typeof dti.toCanvas !== 'function') {
+              throw new Error('dom-to-image-more 未加载');
+            }
+            return dti.toCanvas(doc.body, { bgcolor: null, width: width, height: height });
+          }
+          if (engine === 'modern-screenshot') {
+            var msApi = window.modernScreenshot;
+            if (!msApi || typeof msApi.domToCanvas !== 'function') {
+              throw new Error('modern-screenshot 未加载');
+            }
+            return msApi.domToCanvas(doc.body, { backgroundColor: null, width: width, height: height });
+          }
+          throw new Error('未知截图引擎: ' + engine);
+        }
+
+        return {
+          width: width,
+          height: height,
+          duration: duration,
+          renderAt: async function(t) {
+            await waitForReady();
+            var progress = mapProgress(t);
+            preview.setProgress(progress);
+            await new Promise(function(resolve) { requestAnimationFrame(resolve); });
+            var contentWindow = preview.getContentWindow();
+            if (!contentWindow || !contentWindow.document || !contentWindow.document.documentElement) {
+              throw new Error('iframe 内容未加载');
+            }
+            var captured = await mods.withTimeout(captureWithEngine(contentWindow.document), 20000, 'HTML 截图超时');
+            ctxEl.clearRect(0, 0, canvasEl.width, canvasEl.height);
+            ctxEl.drawImage(captured, 0, 0);
+          },
+          dispose: function() {
+            preview.destroy();
+          },
+        };
+      }
+
+      var exportRunning = false;
+
+      async function runExportBenchmark(engine) {
+        if (exportRunning) {
+          log('导出正在进行中，请稍后', 'warn');
+          return;
+        }
+
+        exportRunning = true;
+        setExportStatus('准备中...');
+
+        var start = performance.now();
+        try {
+          var mods = await loadExportModules();
+          var hiddenContainer = ensureHiddenContainer();
+
+          var exportCanvas = document.createElement('canvas');
+          exportCanvas.width = 720;
+          exportCanvas.height = 720;
+          var exportCtx = exportCanvas.getContext('2d');
+          if (!exportCtx) throw new Error('无法创建导出 Canvas');
+
+          var renderer = await createDomExportRenderer(mods, {
+            html: TEST_HTML,
+            width: 720,
+            height: 720,
+            duration: 3,
+            engine: engine,
+            hiddenContainer: hiddenContainer,
+            canvas: exportCanvas,
+            ctx: exportCtx,
+            animateSeconds: 2,
+          });
+
+          var exportConfig = {
+            codec: 'qtrle',
+            width: 720,
+            height: 720,
+            fps: 30,
+            duration: 3,
+            chunkFrames: 30,
+          };
+
+          var exportController = mods.createExportController(
+            exportCanvas,
+            renderer,
+            exportConfig,
+            function(progress) {
+              var msg = 'phase=' + progress.phase + ' frame=' + progress.currentFrame + '/' + progress.totalFrames + ' chunk=' + progress.currentChunk + '/' + progress.totalChunks + ' ' + progress.percent + '%';
+              setExportStatus(msg);
+              if (progress.phase === 'rendering') {
+                log('[导出] ' + msg, 'info');
+              }
+            }
+          );
+
+          log('开始导出 (engine=' + engine + ', 720x720, 3s, qtrle)', 'info');
+          var result = await exportController.start();
+          renderer.dispose && renderer.dispose();
+
+          var elapsed = ((performance.now() - start) / 1000).toFixed(1);
+          if (!result.success || !result.blob) {
+            setExportStatus('导出失败');
+            log('导出失败: ' + (result.error || '未知错误'), 'error');
+            return;
+          }
+
+          setExportStatus('导出完成');
+          log('导出完成: ' + result.filename + ' (' + elapsed + 's)', 'success');
+          mods.downloadBlob(result.blob, result.filename || 'export.mov');
+        } catch (e) {
+          var msg = e && e.message ? e.message : String(e);
+          setExportStatus('导出错误');
+          log('导出异常: ' + msg, 'error');
+          console.error(e);
+        } finally {
+          exportRunning = false;
+        }
+      }
+
+      var exportDomBtn = document.getElementById('btn-export-dom-to-image');
+      if (exportDomBtn) {
+        exportDomBtn.addEventListener('click', function() {
+          runExportBenchmark('dom-to-image-more');
+        });
+      }
+
+      var exportModernBtn = document.getElementById('btn-export-modern-screenshot');
+      if (exportModernBtn) {
+        exportModernBtn.addEventListener('click', function() {
+          runExportBenchmark('modern-screenshot');
+        });
+      }
+
+      log('调试页面已加载');
+      log('html2canvas: ' + (typeof html2canvas !== 'undefined' ? '已加载' : '未加载'), typeof html2canvas !== 'undefined' ? 'success' : 'error');
+      log('snapdom: ' + (typeof snapdom !== 'undefined' ? '已加载' : '未加载'), typeof snapdom !== 'undefined' ? 'success' : 'error');
+      log('modern-screenshot: ' + (typeof window.modernScreenshot !== 'undefined' ? '已加载' : '未加载'), typeof window.modernScreenshot !== 'undefined' ? 'success' : 'error');
+      log('html-to-image: ' + (typeof window.htmlToImage !== 'undefined' ? '已加载' : '未加载'), typeof window.htmlToImage !== 'undefined' ? 'success' : 'error');
+      log('dom-to-image-more: ' + (typeof window.domtoimage !== 'undefined' ? '已加载' : '未加载'), typeof window.domtoimage !== 'undefined' ? 'success' : 'error');
+      log('请按顺序点击按钮测试');
+    })();
+  </script>
+</body>
+</html>

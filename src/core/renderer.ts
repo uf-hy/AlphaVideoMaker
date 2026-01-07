@@ -5,6 +5,9 @@
 
 import type { CanvasRenderer, FpsOption } from '@/core/types';
 import { canvasToBlob, blobToUint8Array } from '@/utils/blob-utils';
+import { withTimeout } from '@/utils';
+
+const DEFAULT_RENDER_AT_TIMEOUT_MS = 30000;
 
 /**
  * 帧数据
@@ -118,7 +121,11 @@ export class FrameRenderer {
     const time = this.renderer.duration > 0 ? rawTime % this.renderer.duration : rawTime;
 
     // 在主 Canvas 上渲染（原始尺寸）
-    await this.renderer.renderAt(time);
+    await withTimeout(
+      Promise.resolve(this.renderer.renderAt(time)),
+      DEFAULT_RENDER_AT_TIMEOUT_MS,
+      'renderAt 超时（可能是自定义 HTML 截图卡住）'
+    );
 
     // 清除输出 Canvas
     this.outputCtx.clearRect(0, 0, this.targetWidth, this.targetHeight);
@@ -128,8 +135,8 @@ export class FrameRenderer {
     const scaledHeight = this.renderer.height * this.contentScale;
 
     // 居中绘制
-    const offsetX = (this.targetWidth - scaledWidth) / 2;
-    const offsetY = (this.targetHeight - scaledHeight) / 2;
+    const offsetX = Math.round((this.targetWidth - scaledWidth) / 2);
+    const offsetY = Math.round((this.targetHeight - scaledHeight) / 2);
 
     // 将主 Canvas 内容缩放绘制到输出 Canvas
     this.outputCtx.drawImage(

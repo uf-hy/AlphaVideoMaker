@@ -14,9 +14,11 @@ import {
   createHtmlExportRenderer,
   DEFAULT_HTML_TEMPLATE,
   REALTIME_HTML_TEMPLATE,
+  GLASS_CARD_STATS_TEMPLATE,
   type HtmlEditor,
   type IframePreview,
   type RecordMode,
+  type CaptureEngine,
   injectTransparentBackground,
   type TransparentMode,
 } from '@/editor';
@@ -30,6 +32,7 @@ interface HtmlEditorAppState {
   isExporting: boolean;
   result: ExportResult | null;
   recordMode: RecordMode;
+  captureEngine: CaptureEngine;
   transparentMode: TransparentMode;
   customBgColor: string;
 }
@@ -47,6 +50,7 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
     isExporting: false,
     result: null,
     recordMode: 'deterministic',
+    captureEngine: 'snapdom',
     transparentMode: 'auto',
     customBgColor: '#00ff00',
   };
@@ -65,6 +69,7 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
     previewContainer: container.querySelector('#preview-container') as HTMLElement,
     hiddenContainer: container.querySelector('#hidden-render-container') as HTMLElement,
     recordModeSelect: container.querySelector('#record-mode-select') as HTMLSelectElement,
+    captureEngineSelect: container.querySelector('#capture-engine-select') as HTMLSelectElement,
     transparentModeSelect: container.querySelector('#transparent-mode-select') as HTMLSelectElement,
     customBgColorInput: container.querySelector('#custom-bg-color') as HTMLInputElement,
     customBgColorGroup: container.querySelector('#custom-bg-color-group') as HTMLElement,
@@ -97,7 +102,9 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
     container: elements.previewContainer,
     width: state.config.width,
     height: state.config.height,
+    durationSeconds: state.config.duration,
   });
+  preview.setDurationSeconds(state.config.duration);
 
   preview.updateContent(processHtml(DEFAULT_HTML_TEMPLATE));
 
@@ -117,6 +124,7 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
   function updatePreviewSize(): void {
     const { width, height } = state.config;
     preview?.resize(width, height);
+    preview?.setDurationSeconds(state.config.duration);
 
     // 更新预览容器的宽高比
     const previewWrapper = elements.previewContainer.parentElement;
@@ -217,6 +225,7 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
         height: state.config.height,
         duration: state.config.duration,
         mode: state.recordMode,
+        captureEngine: state.captureEngine,
         hiddenContainer: elements.hiddenContainer,
         canvas: exportCanvas,
         ctx: exportCtx,
@@ -277,6 +286,10 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
     }
   });
 
+  elements.captureEngineSelect?.addEventListener('change', (e) => {
+    state.captureEngine = (e.target as HTMLSelectElement).value as CaptureEngine;
+  });
+
   elements.transparentModeSelect?.addEventListener('change', (e) => {
     state.transparentMode = (e.target as HTMLSelectElement).value as TransparentMode;
     elements.customBgColorGroup.style.display = state.transparentMode === 'custom' ? 'block' : 'none';
@@ -334,6 +347,9 @@ export function createHtmlEditorApp(container: HTMLElement): { destroy: () => vo
       } else if (templateType === 'realtime' && editor) {
         editor.setCode(REALTIME_HTML_TEMPLATE);
         preview?.updateContent(processHtml(REALTIME_HTML_TEMPLATE));
+      } else if (templateType === 'glass-card' && editor) {
+        editor.setCode(GLASS_CARD_STATS_TEMPLATE);
+        preview?.updateContent(processHtml(GLASS_CARD_STATS_TEMPLATE));
       }
     });
   });
@@ -375,6 +391,7 @@ function createAppHTML(state: HtmlEditorAppState, canUseMultiThread: boolean): s
           <div class="template-buttons">
             <button class="template-btn" data-template="deterministic">确定性模板</button>
             <button class="template-btn" data-template="realtime">实时模板</button>
+            <button class="template-btn" data-template="glass-card">卡片示例</button>
             <button id="reset-btn" class="template-btn">重置</button>
           </div>
         </div>
@@ -401,6 +418,15 @@ function createAppHTML(state: HtmlEditorAppState, canUseMultiThread: boolean): s
               <option value="realtime">实时模式</option>
             </select>
             <small class="hint">确定性模式通过 CSS 变量 --t 控制动画，帧率稳定</small>
+          </div>
+
+          <div class="control-group">
+            <label>截图引擎</label>
+            <select id="capture-engine-select" class="form-select">
+              <option value="snapdom" selected>SnapDOM (推荐)</option>
+              <option value="html2canvas">html2canvas</option>
+            </select>
+            <small class="hint">SnapDOM 渲染更准确、速度更快</small>
           </div>
 
           <div class="control-group">

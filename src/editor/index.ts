@@ -8,6 +8,7 @@ export {
   createHtmlAnimationRenderer,
   createHtmlExportRenderer,
   type RecordMode,
+  type CaptureEngine,
   type HtmlAnimationRendererOptions,
 } from './html-renderer';
 export {
@@ -15,4 +16,13 @@ export {
   type TransparentMode,
   type InjectTransparentBackgroundOptions,
 } from './html-utils';
-export { DEFAULT_HTML_TEMPLATE, REALTIME_HTML_TEMPLATE } from './templates';
+export {
+  DEFAULT_HTML_TEMPLATE,
+  REALTIME_HTML_TEMPLATE,
+  GLASS_CARD_STATS_TEMPLATE,
+} from './templates';
+export {
+  createFrameCache,
+  type FrameCache,
+  type FrameCacheOptions,
+} from './frame-cache';
